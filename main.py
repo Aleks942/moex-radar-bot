@@ -9,7 +9,8 @@ CHAT_ID = os.getenv("CHAT_ID")
 CHECK_INTERVAL = 300
 LOOKBACK_BARS = 20
 ATR_PERIOD = 14
-INTERVAL_MIN = 60
+INTERVAL_H1 = 60
+INTERVAL_D1 = 1440
 VOLUME_CONFIRM = 1.5
 RETEST_TOLERANCE = 0.003
 
@@ -34,23 +35,23 @@ def send(msg):
         pass
 
 # ---------- DATA ----------
-def get_candles(t):
+def get_candles(ticker, interval, days):
     try:
         r = requests.get(
-            f"{MOEX}/{t}/candles.json",
+            f"{MOEX}/{ticker}/candles.json",
             params={
-                "interval": INTERVAL_MIN,
-                "from": (datetime.utcnow()-timedelta(days=7)).strftime("%Y-%m-%d")
+                "interval": interval,
+                "from": (datetime.utcnow()-timedelta(days=days)).strftime("%Y-%m-%d")
             },
             timeout=10
         ).json()
-        return r["candles"]["data"][-max(LOOKBACK_BARS, ATR_PERIOD+1):]
+        return r["candles"]["data"]
     except:
         return []
 
-def get_price(t):
+def get_price(ticker):
     try:
-        r = requests.get(f"{MOEX}/{t}.json", timeout=10).json()
+        r = requests.get(f"{MOEX}/{ticker}.json", timeout=10).json()
         md = r["marketdata"]
         return float(md["data"][0][md["columns"].index("LAST")])
     except:
@@ -73,15 +74,32 @@ def calc_atr(candles):
         return None
     return sum(trs[-ATR_PERIOD:]) / ATR_PERIOD
 
+# ---------- D1 FILTER ----------
+def get_d1_trend(ticker):
+    candles = get_candles(ticker, INTERVAL_D1, 120)
+    if len(candles) < 60:
+        return "FLAT"
+
+    closes = [c[1] for c in candles[-50:]]
+    ema50 = sum(closes) / len(closes)
+    price = closes[-1]
+
+    if price > ema50 * 1.005:
+        return "UP"
+    if price < ema50 * 0.995:
+        return "DOWN"
+    return "FLAT"
+
 # ---------- LOGIC ----------
-def check(t):
-    candles = get_candles(t)
-    if len(candles) < ATR_PERIOD + 1:
+def check(ticker):
+    h1 = get_candles(ticker, INTERVAL_H1, 7)
+    if len(h1) < max(LOOKBACK_BARS, ATR_PERIOD+1):
         return
 
-    highs = [c[2] for c in candles[-LOOKBACK_BARS:]]
-    lows  = [c[3] for c in candles[-LOOKBACK_BARS:]]
-    vols  = [c[5] for c in candles[-LOOKBACK_BARS:]]
+    recent = h1[-LOOKBACK_BARS:]
+    highs = [c[2] for c in recent]
+    lows  = [c[3] for c in recent]
+    vols  = [c[5] for c in recent]
 
     hi = max(highs)
     lo = min(lows)
@@ -90,15 +108,16 @@ def check(t):
     curr_vol = vols[-1]
     vol_ratio = curr_vol / avg_vol if avg_vol else 0
 
-    price = get_price(t)
+    price = get_price(ticker)
     if not price:
         return
 
-    atr = calc_atr(candles)
+    atr = calc_atr(h1)
     if not atr:
         return
 
-    s = state.setdefault(t, {"status": "INSIDE", "level": None})
+    d1 = get_d1_trend(ticker)
+    s = state.setdefault(ticker, {"status": "INSIDE", "level": None})
 
     # ----- ПРОБОЙ ВВЕРХ -----
     if price > hi and s["status"] == "INSIDE":
@@ -112,22 +131,24 @@ def check(t):
 
         if abs(price - level) / level <= RETEST_TOLERANCE:
             if vol_ratio >= VOLUME_CONFIRM and price >= level:
+                strength = 4
+                if d1 == "UP": strength += 1
+                if d1 == "DOWN": strength -= 1
+                strength = max(1, min(5, strength))
+
                 tp1 = round(price + atr, 2)
                 tp2 = round(price + atr * 2, 2)
                 tp3 = round(price + atr * 3, 2)
 
                 send(
                     f"✅ РЕТЕСТ УРОВНЯ УДЕРЖАН\n"
-                    f"{t}\n"
-                    f"Цена: {round(price,2)}\n"
-                    f"Уровень: {round(level,2)}\n\n"
+                    f"{ticker}\n"
+                    f"Цена: {round(price,2)}\n\n"
+                    f"D1: {d1}\n"
                     f"ATR(1H): {round(atr,2)}\n\n"
-                    f"🎯 Цели:\n"
-                    f"TP1: {tp1}\n"
-                    f"TP2: {tp2}\n"
-                    f"TP3: {tp3}\n\n"
-                    f"Сила сценария: 🔥🔥🔥🔥🔥 (5/5)\n\n"
-                    f"🧠 Вывод: Подтверждённый импульс"
+                    f"🎯 Цели:\nTP1: {tp1}\nTP2: {tp2}\nTP3: {tp3}\n\n"
+                    f"Сила сценария: {'🔥'*strength} ({strength}/5)\n\n"
+                    f"🧠 Вывод: {'Приоритетный сценарий' if strength>=4 else 'Наблюдать'}"
                 )
                 s["status"] = "CONFIRMED"
 
@@ -136,7 +157,7 @@ def check(t):
             s["level"] = None
 
 # ---------- START ----------
-send("🇷🇺 МОЕХ-РАДАР\nATR-цели после ретеста активированы")
+send("🇷🇺 МОЕХ-РАДАР\nD1-фильтр включён (мягкий режим)")
 
 while True:
     try:
