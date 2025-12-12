@@ -6,14 +6,12 @@ from datetime import datetime, timedelta
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
+# ===== НАСТРОЙКИ =====
 CHECK_INTERVAL = 300
+DAILY_REPORT_HOUR = 19  # 19:00 МСК
 LOOKBACK_BARS = 20
-ATR_PERIOD = 14
 INTERVAL_H1 = 60
 INTERVAL_D1 = 1440
-VOLUME_CONFIRM = 1.5
-RETEST_TOLERANCE = 0.003
-D1_LOOKBACK = 10
 
 TICKERS = [
     "SBER","GAZP","LKOH","ROSN","GMKN",
@@ -22,9 +20,10 @@ TICKERS = [
 ]
 
 MOEX = "https://iss.moex.com/iss/engines/stock/markets/shares/securities"
-state = {}
 
-# ---------- TELEGRAM ----------
+last_daily_report_date = None
+
+# ===== TELEGRAM =====
 def send(msg):
     try:
         requests.post(
@@ -35,7 +34,7 @@ def send(msg):
     except:
         pass
 
-# ---------- DATA ----------
+# ===== DATA =====
 def get_candles(ticker, interval, days):
     try:
         r = requests.get(
@@ -58,103 +57,97 @@ def get_price(ticker):
     except:
         return None
 
-# ---------- ATR ----------
-def calc_atr(candles):
-    trs = []
-    for i in range(1, len(candles)):
-        h = candles[i][2]
-        l = candles[i][3]
-        pc = candles[i-1][1]
-        tr = max(h - l, abs(h - pc), abs(l - pc))
-        trs.append(tr)
-    if len(trs) < ATR_PERIOD:
-        return None
-    return sum(trs[-ATR_PERIOD:]) / ATR_PERIOD
+# ===== D1 TREND =====
+def get_d1_trend_imoex():
+    d1 = get_candles("IMOEX", INTERVAL_D1, 120)
+    if len(d1) < 60:
+        return "FLAT"
 
-# ---------- D1 LEVELS ----------
-def get_d1_levels(ticker):
-    d1 = get_candles(ticker, INTERVAL_D1, 120)
-    if len(d1) < D1_LOOKBACK:
-        return None, None
-    recent = d1[-D1_LOOKBACK:]
-    highs = [c[2] for c in recent]
-    lows  = [c[3] for c in recent]
-    return round(min(lows),2), round(max(highs),2)
+    closes = [c[1] for c in d1[-50:]]
+    ema50 = sum(closes) / len(closes)
+    price = closes[-1]
 
-# ---------- LOGIC ----------
-def check(ticker):
+    if price > ema50 * 1.005:
+        return "UP"
+    if price < ema50 * 0.995:
+        return "DOWN"
+    return "FLAT"
+
+# ===== STAGE (упрощённо для обзора) =====
+def get_stage(ticker):
     h1 = get_candles(ticker, INTERVAL_H1, 7)
-    if len(h1) < max(LOOKBACK_BARS, ATR_PERIOD+1):
-        return
+    if len(h1) < LOOKBACK_BARS:
+        return "ACCUM"
 
     recent = h1[-LOOKBACK_BARS:]
     highs = [c[2] for c in recent]
     lows  = [c[3] for c in recent]
-    vols  = [c[5] for c in recent]
-
-    hi = max(highs)
-    lo = min(lows)
-
-    avg_vol = sum(vols[:-1]) / max(1, len(vols[:-1]))
-    vol_ratio = vols[-1] / avg_vol if avg_vol else 0
-
     price = get_price(ticker)
+
     if not price:
+        return "ACCUM"
+
+    if price > max(highs):
+        return "UP"
+    if price < min(lows):
+        return "DOWN"
+    return "ACCUM"
+
+# ===== DAILY REPORT =====
+def send_daily_report():
+    global last_daily_report_date
+
+    now = datetime.utcnow() + timedelta(hours=3)  # МСК
+    today = now.date()
+
+    if last_daily_report_date == today or now.hour != DAILY_REPORT_HOUR:
         return
 
-    atr = calc_atr(h1)
-    if not atr:
-        return
+    imoex = get_d1_trend_imoex()
 
-    d1_sup, d1_res = get_d1_levels(ticker)
-    strength_adj = 0
-    level_note = ""
+    stages = {"UP": 0, "DOWN": 0, "ACCUM": 0}
+    strengths = []
 
-    if d1_sup and abs(price - d1_sup)/price < 0.01:
-        strength_adj += 1
-        level_note = f"D1 поддержка: {d1_sup}"
-    elif d1_res and abs(d1_res - price)/price < 0.01:
-        strength_adj -= 1
-        level_note = f"D1 сопротивление: {d1_res}"
+    for t in TICKERS:
+        stage = get_stage(t)
+        stages[stage] += 1
+
+        # грубая сила для обзора
+        if stage == "UP":
+            strengths.append((t, 4))
+        elif stage == "DOWN":
+            strengths.append((t, 4))
+
+    strengths = sorted(strengths, key=lambda x: x[1], reverse=True)[:3]
+
+    if imoex == "UP" and stages["UP"] > stages["DOWN"]:
+        mode = "🟢 РЕЖИМ ТРЕНДА\nМожно работать импульсы"
+    elif imoex == "DOWN" and stages["DOWN"] > stages["UP"]:
+        mode = "🔴 РЕЖИМ ЗАЩИТЫ\nРиск повышен, осторожно"
     else:
-        level_note = f"D1 диапазон: {d1_sup} – {d1_res}"
+        mode = "🟡 РЕЖИМ ФЛЭТА\nРабота от уровней"
 
-    s = state.setdefault(ticker, {"status": "INSIDE", "level": None})
+    msg = (
+        "🇷🇺 ОБЗОР МОЕХ — СЕГОДНЯ\n\n"
+        f"IMOEX: {imoex}\n\n"
+        "📊 Стадии рынка:\n"
+        f"🟢 Накопление: {stages['ACCUM']}\n"
+        f"📈 Импульс вверх: {stages['UP']}\n"
+        f"📉 Импульс вниз: {stages['DOWN']}\n\n"
+        "🔥 ТОП СИЛА:\n" +
+        "\n".join([f"{i+1}) {s[0]} ({s[1]}/5)" for i, s in enumerate(strengths)]) +
+        f"\n\n🧠 {mode}"
+    )
 
-    if price > hi and s["status"] == "INSIDE":
-        s["status"] = "BROKE_UP"
-        s["level"] = hi
-        return
+    send(msg)
+    last_daily_report_date = today
 
-    if s["status"] == "BROKE_UP":
-        level = s["level"]
-        if abs(price - level)/level <= RETEST_TOLERANCE and vol_ratio >= VOLUME_CONFIRM:
-            base_strength = 4
-            strength = max(1, min(5, base_strength + strength_adj))
-
-            tp1 = round(price + atr,2)
-            tp2 = round(price + atr*2,2)
-            tp3 = round(price + atr*3,2)
-
-            send(
-                f"✅ РЕТЕСТ УРОВНЯ УДЕРЖАН\n"
-                f"{ticker}\n"
-                f"Цена: {round(price,2)}\n\n"
-                f"{level_note}\n"
-                f"ATR(1H): {round(atr,2)}\n\n"
-                f"🎯 Цели:\nTP1: {tp1}\nTP2: {tp2}\nTP3: {tp3}\n\n"
-                f"Сила сценария: {'🔥'*strength} ({strength}/5)\n\n"
-                f"🧠 Вывод: {'Приоритетный сценарий' if strength>=4 else 'Наблюдать'}"
-            )
-            s["status"] = "CONFIRMED"
-
-# ---------- START ----------
-send("🇷🇺 МОЕХ-РАДАР\nD1-уровни добавлены")
+# ===== START =====
+send("🇷🇺 МОЕХ-РАДАР\nДневной обзор «Где рынок» активирован")
 
 while True:
     try:
-        for t in TICKERS:
-            check(t)
+        send_daily_report()
         time.sleep(CHECK_INTERVAL)
     except Exception as e:
         send(f"❌ ERROR: {e}")
