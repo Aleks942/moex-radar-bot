@@ -13,6 +13,7 @@ INTERVAL_H1 = 60
 INTERVAL_D1 = 1440
 VOLUME_CONFIRM = 1.5
 RETEST_TOLERANCE = 0.003
+D1_LOOKBACK = 10
 
 TICKERS = [
     "SBER","GAZP","LKOH","ROSN","GMKN",
@@ -61,34 +62,24 @@ def get_price(ticker):
 def calc_atr(candles):
     trs = []
     for i in range(1, len(candles)):
-        high = candles[i][2]
-        low = candles[i][3]
-        prev_close = candles[i-1][1]
-        tr = max(
-            high - low,
-            abs(high - prev_close),
-            abs(low - prev_close)
-        )
+        h = candles[i][2]
+        l = candles[i][3]
+        pc = candles[i-1][1]
+        tr = max(h - l, abs(h - pc), abs(l - pc))
         trs.append(tr)
     if len(trs) < ATR_PERIOD:
         return None
     return sum(trs[-ATR_PERIOD:]) / ATR_PERIOD
 
-# ---------- D1 FILTER ----------
-def get_d1_trend(ticker):
-    candles = get_candles(ticker, INTERVAL_D1, 120)
-    if len(candles) < 60:
-        return "FLAT"
-
-    closes = [c[1] for c in candles[-50:]]
-    ema50 = sum(closes) / len(closes)
-    price = closes[-1]
-
-    if price > ema50 * 1.005:
-        return "UP"
-    if price < ema50 * 0.995:
-        return "DOWN"
-    return "FLAT"
+# ---------- D1 LEVELS ----------
+def get_d1_levels(ticker):
+    d1 = get_candles(ticker, INTERVAL_D1, 120)
+    if len(d1) < D1_LOOKBACK:
+        return None, None
+    recent = d1[-D1_LOOKBACK:]
+    highs = [c[2] for c in recent]
+    lows  = [c[3] for c in recent]
+    return round(min(lows),2), round(max(highs),2)
 
 # ---------- LOGIC ----------
 def check(ticker):
@@ -105,8 +96,7 @@ def check(ticker):
     lo = min(lows)
 
     avg_vol = sum(vols[:-1]) / max(1, len(vols[:-1]))
-    curr_vol = vols[-1]
-    vol_ratio = curr_vol / avg_vol if avg_vol else 0
+    vol_ratio = vols[-1] / avg_vol if avg_vol else 0
 
     price = get_price(ticker)
     if not price:
@@ -116,48 +106,50 @@ def check(ticker):
     if not atr:
         return
 
-    d1 = get_d1_trend(ticker)
+    d1_sup, d1_res = get_d1_levels(ticker)
+    strength_adj = 0
+    level_note = ""
+
+    if d1_sup and abs(price - d1_sup)/price < 0.01:
+        strength_adj += 1
+        level_note = f"D1 поддержка: {d1_sup}"
+    elif d1_res and abs(d1_res - price)/price < 0.01:
+        strength_adj -= 1
+        level_note = f"D1 сопротивление: {d1_res}"
+    else:
+        level_note = f"D1 диапазон: {d1_sup} – {d1_res}"
+
     s = state.setdefault(ticker, {"status": "INSIDE", "level": None})
 
-    # ----- ПРОБОЙ ВВЕРХ -----
     if price > hi and s["status"] == "INSIDE":
         s["status"] = "BROKE_UP"
         s["level"] = hi
         return
 
-    # ----- РЕТЕСТ -----
     if s["status"] == "BROKE_UP":
         level = s["level"]
+        if abs(price - level)/level <= RETEST_TOLERANCE and vol_ratio >= VOLUME_CONFIRM:
+            base_strength = 4
+            strength = max(1, min(5, base_strength + strength_adj))
 
-        if abs(price - level) / level <= RETEST_TOLERANCE:
-            if vol_ratio >= VOLUME_CONFIRM and price >= level:
-                strength = 4
-                if d1 == "UP": strength += 1
-                if d1 == "DOWN": strength -= 1
-                strength = max(1, min(5, strength))
+            tp1 = round(price + atr,2)
+            tp2 = round(price + atr*2,2)
+            tp3 = round(price + atr*3,2)
 
-                tp1 = round(price + atr, 2)
-                tp2 = round(price + atr * 2, 2)
-                tp3 = round(price + atr * 3, 2)
-
-                send(
-                    f"✅ РЕТЕСТ УРОВНЯ УДЕРЖАН\n"
-                    f"{ticker}\n"
-                    f"Цена: {round(price,2)}\n\n"
-                    f"D1: {d1}\n"
-                    f"ATR(1H): {round(atr,2)}\n\n"
-                    f"🎯 Цели:\nTP1: {tp1}\nTP2: {tp2}\nTP3: {tp3}\n\n"
-                    f"Сила сценария: {'🔥'*strength} ({strength}/5)\n\n"
-                    f"🧠 Вывод: {'Приоритетный сценарий' if strength>=4 else 'Наблюдать'}"
-                )
-                s["status"] = "CONFIRMED"
-
-        if price < level * (1 - RETEST_TOLERANCE):
-            s["status"] = "INSIDE"
-            s["level"] = None
+            send(
+                f"✅ РЕТЕСТ УРОВНЯ УДЕРЖАН\n"
+                f"{ticker}\n"
+                f"Цена: {round(price,2)}\n\n"
+                f"{level_note}\n"
+                f"ATR(1H): {round(atr,2)}\n\n"
+                f"🎯 Цели:\nTP1: {tp1}\nTP2: {tp2}\nTP3: {tp3}\n\n"
+                f"Сила сценария: {'🔥'*strength} ({strength}/5)\n\n"
+                f"🧠 Вывод: {'Приоритетный сценарий' if strength>=4 else 'Наблюдать'}"
+            )
+            s["status"] = "CONFIRMED"
 
 # ---------- START ----------
-send("🇷🇺 МОЕХ-РАДАР\nD1-фильтр включён (мягкий режим)")
+send("🇷🇺 МОЕХ-РАДАР\nD1-уровни добавлены")
 
 while True:
     try:
