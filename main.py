@@ -1,110 +1,108 @@
-import os
-import time
 import requests
+import time
+import os
 from datetime import datetime
 
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-CHAT_ID = os.environ.get("CHAT_ID")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
 
-CHECK_INTERVAL = 60 * 15  # 15 минут
-STATE_FILE = "moex_state.txt"
-
-# ===== НАСТРОЙКИ =====
-IMOEX_SYMBOL = "IMOEX"
-STOCKS = [
-    "SBER", "GAZP", "LKOH", "ROSN", "GMKN", "NVTK", "TATN", "MTSS",
-    "ALRS", "CHMF", "MAGN", "PLZL", "POLY", "SNGS", "VTBR",
-    "YNDX", "OZON", "FIVE", "MOEX", "RUAL",
-    "AFLT", "IRAO", "PIKK", "PHOR", "RTKM",
-    "TRNFP", "BSPB", "CBOM", "SBERP", "UPRO",
-    "RASP", "ENPG", "LSRG", "FEES", "AKRN",
-    "NMTP", "HYDR", "MTLR", "TCSG", "POSI"
+MOEX_TICKERS = [
+    "SBER", "GAZP", "LKOH", "ROSN", "GMKN",
+    "NVTK", "TATN", "MTSS", "ALRS", "CHMF",
+    "MAGN", "PLZL"
 ]
 
-MOEX_API = "https://iss.moex.com/iss/engines/stock/markets/shares/boards/TQBR/securities"
+STATE_FILE = "state.json"
 
-# ===== TELEGRAM =====
-def send_telegram(text):
+STAGE_UP = "📈 ИМПУЛЬС ВВЕРХ"
+STAGE_DOWN = "📉 ИМПУЛЬС ВНИЗ"
+STAGE_FLAT = "⏸ ФЛЕТ"
+
+def send(msg):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    payload = {
+    requests.post(url, json={
         "chat_id": CHAT_ID,
-        "text": text,
-        "parse_mode": "HTML"
-    }
-    try:
-        requests.post(url, data=payload, timeout=10)
-    except:
-        pass
+        "text": msg
+    })
 
-# ===== МОЕХ ДАННЫЕ =====
-def get_price(symbol):
-    url = f"{MOEX_API}/{symbol}.json"
+def get_price(ticker):
+    url = f"https://iss.moex.com/iss/engines/stock/markets/shares/securities/{ticker}.json"
     r = requests.get(url, timeout=10).json()
-    market = r["marketdata"]["data"][0]
-    last = market[12]
-    open_p = market[7]
-    return last, open_p
 
-def stage_from_change(change):
-    if change >= 2:
-        return "📈 ИМПУЛЬС ВВЕРХ", 5
-    if change >= 1:
-        return "⬆️ РОСТ", 4
-    if change > -1:
-        return "⏸ ФЛЕТ", 2
-    if change <= -2:
-        return "📉 ИМПУЛЬС ВНИЗ", 5
-    return "⬇️ ПАДЕНИЕ", 4
+    marketdata = r.get("marketdata", {}).get("data", [])
+    if not marketdata:
+        return None
 
-# ===== СОСТОЯНИЕ =====
+    last = marketdata[0][12]  # LAST price
+    return last
+
 def load_state():
     if not os.path.exists(STATE_FILE):
         return {}
+    import json
     with open(STATE_FILE, "r") as f:
-        lines = f.read().splitlines()
-    return dict(line.split("|") for line in lines if "|" in line)
+        return json.load(f)
 
 def save_state(state):
+    import json
     with open(STATE_FILE, "w") as f:
-        for k, v in state.items():
-            f.write(f"{k}|{v}\n")
+        json.dump(state, f)
 
-# ===== ОСНОВНОЙ ЦИКЛ =====
-def run():
-    send_telegram("🇷🇺 <b>МОЕХ-РАДАР ЗАПУЩЕН</b>\nСигналы только при смене стадии.")
+def detect_stage(prev, curr):
+    if curr > prev * 1.01:
+        return STAGE_UP
+    if curr < prev * 0.99:
+        return STAGE_DOWN
+    return STAGE_FLAT
+
+def main():
+    send("🇷🇺 МОЕХ-РАДАР ЗАПУЩЕН\nСигналы только при смене стадии.")
+
     state = load_state()
+    first_run = not state
 
     while True:
         try:
-            for symbol in STOCKS:
-                price, open_p = get_price(symbol)
-                if not price or not open_p:
+            for ticker in MOEX_TICKERS:
+                price = get_price(ticker)
+                if price is None:
                     continue
 
-                change = round((price - open_p) / open_p * 100, 2)
-                stage, power = stage_from_change(change)
+                prev_price = state.get(ticker, {}).get("price")
+                prev_stage = state.get(ticker, {}).get("stage")
 
-                prev = state.get(symbol)
-                now = stage
+                if prev_price is None:
+                    state[ticker] = {
+                        "price": price,
+                        "stage": STAGE_FLAT
+                    }
+                    continue
 
-                if prev != now:
-                    state[symbol] = now
-                    send_telegram(
-                        f"<b>{symbol}</b>\n"
+                stage = detect_stage(prev_price, price)
+
+                if stage != prev_stage:
+                    change = round((price - prev_price) / prev_price * 100, 2)
+
+                    msg = (
+                        f"{ticker}\n"
                         f"Цена: {price}\n"
                         f"Изм: {change}%\n"
-                        f"Стадия: <b>{stage}</b>\n"
-                        f"Сила: {power}/5\n\n"
-                        f"🧠 Вывод: {'СМОТРЕТЬ' if power >= 4 else 'НЕ ВХОДИТЬ'}"
+                        f"Стадия: {stage}\n\n"
+                        f"🧠 Вывод: {'СМОТРЕТЬ' if stage != STAGE_FLAT else 'ОЖИДАТЬ'}"
                     )
+                    send(msg)
+
+                state[ticker] = {
+                    "price": price,
+                    "stage": stage
+                }
 
             save_state(state)
+            time.sleep(300)
 
         except Exception as e:
-            send_telegram(f"❌ MOEX BOT ERROR: {e}")
-
-        time.sleep(CHECK_INTERVAL)
+            send(f"❌ MOEX BOT ERROR: {e}")
+            time.sleep(60)
 
 if __name__ == "__main__":
-    run()
-
+    main()
