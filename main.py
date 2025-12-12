@@ -8,10 +8,11 @@ CHAT_ID = os.getenv("CHAT_ID")
 
 # ===== НАСТРОЙКИ =====
 CHECK_INTERVAL = 300
-DAILY_REPORT_HOUR = 19  # 19:00 МСК
-LOOKBACK_BARS = 20
-INTERVAL_H1 = 60
+WEEKLY_REPORT_WEEKDAY = 0   # 0 = понедельник
+WEEKLY_REPORT_HOUR = 10     # 10:00 МСК
+
 INTERVAL_D1 = 1440
+INTERVAL_W1 = 10080
 
 TICKERS = [
     "SBER","GAZP","LKOH","ROSN","GMKN",
@@ -20,8 +21,7 @@ TICKERS = [
 ]
 
 MOEX = "https://iss.moex.com/iss/engines/stock/markets/shares/securities"
-
-last_daily_report_date = None
+last_weekly_report = None
 
 # ===== TELEGRAM =====
 def send(msg):
@@ -49,105 +49,89 @@ def get_candles(ticker, interval, days):
     except:
         return []
 
-def get_price(ticker):
-    try:
-        r = requests.get(f"{MOEX}/{ticker}.json", timeout=10).json()
-        md = r["marketdata"]
-        return float(md["data"][0][md["columns"].index("LAST")])
-    except:
-        return None
+# ===== W1 TREND =====
+def get_w1_trend(ticker):
+    candles = get_candles(ticker, INTERVAL_W1, 400)
+    if len(candles) < 20:
+        return "FLAT", None, None
 
-# ===== D1 TREND =====
-def get_d1_trend_imoex():
-    d1 = get_candles("IMOEX", INTERVAL_D1, 120)
-    if len(d1) < 60:
-        return "FLAT"
-
-    closes = [c[1] for c in d1[-50:]]
-    ema50 = sum(closes) / len(closes)
+    closes = [c[1] for c in candles[-20:]]
+    ema20 = sum(closes) / len(closes)
     price = closes[-1]
 
-    if price > ema50 * 1.005:
-        return "UP"
-    if price < ema50 * 0.995:
-        return "DOWN"
-    return "FLAT"
+    highs = [c[2] for c in candles[-12:]]
+    lows  = [c[3] for c in candles[-12:]]
 
-# ===== STAGE (упрощённо для обзора) =====
-def get_stage(ticker):
-    h1 = get_candles(ticker, INTERVAL_H1, 7)
-    if len(h1) < LOOKBACK_BARS:
-        return "ACCUM"
+    w1_high = round(max(highs), 2)
+    w1_low  = round(min(lows), 2)
 
-    recent = h1[-LOOKBACK_BARS:]
-    highs = [c[2] for c in recent]
-    lows  = [c[3] for c in recent]
-    price = get_price(ticker)
+    if price > ema20 * 1.01:
+        return "UP", w1_low, w1_high
+    if price < ema20 * 0.99:
+        return "DOWN", w1_low, w1_high
+    return "FLAT", w1_low, w1_high
 
-    if not price:
-        return "ACCUM"
-
-    if price > max(highs):
-        return "UP"
-    if price < min(lows):
-        return "DOWN"
-    return "ACCUM"
-
-# ===== DAILY REPORT =====
-def send_daily_report():
-    global last_daily_report_date
+# ===== WEEKLY REPORT =====
+def send_weekly_report():
+    global last_weekly_report
 
     now = datetime.utcnow() + timedelta(hours=3)  # МСК
     today = now.date()
 
-    if last_daily_report_date == today or now.hour != DAILY_REPORT_HOUR:
+    if (
+        last_weekly_report == today or
+        now.weekday() != WEEKLY_REPORT_WEEKDAY or
+        now.hour != WEEKLY_REPORT_HOUR
+    ):
         return
 
-    imoex = get_d1_trend_imoex()
+    # IMOEX
+    imoex_trend, imoex_low, imoex_high = get_w1_trend("IMOEX")
 
-    stages = {"UP": 0, "DOWN": 0, "ACCUM": 0}
-    strengths = []
+    counts = {"UP": 0, "DOWN": 0, "FLAT": 0}
+    focus = []
 
     for t in TICKERS:
-        stage = get_stage(t)
-        stages[stage] += 1
+        trend, low, high = get_w1_trend(t)
+        counts[trend] += 1
 
-        # грубая сила для обзора
-        if stage == "UP":
-            strengths.append((t, 4))
-        elif stage == "DOWN":
-            strengths.append((t, 4))
+        if trend == "UP" and low:
+            focus.append(f"{t} — у поддержки {low}")
+        if trend == "DOWN" and high:
+            focus.append(f"{t} — под сопротивлением {high}")
 
-    strengths = sorted(strengths, key=lambda x: x[1], reverse=True)[:3]
+    focus = focus[:3]
 
-    if imoex == "UP" and stages["UP"] > stages["DOWN"]:
-        mode = "🟢 РЕЖИМ ТРЕНДА\nМожно работать импульсы"
-    elif imoex == "DOWN" and stages["DOWN"] > stages["UP"]:
-        mode = "🔴 РЕЖИМ ЗАЩИТЫ\nРиск повышен, осторожно"
+    if imoex_trend == "UP":
+        mode = "🟢 РЕЖИМ РОСТА\nПриоритет — лонги по тренду"
+    elif imoex_trend == "DOWN":
+        mode = "🔴 РЕЖИМ ДАВЛЕНИЯ\nОсторожно, защита капитала"
     else:
-        mode = "🟡 РЕЖИМ ФЛЭТА\nРабота от уровней"
+        mode = "🟡 ШИРОКИЙ ФЛЭТ\nРабота от уровней"
 
     msg = (
-        "🇷🇺 ОБЗОР МОЕХ — СЕГОДНЯ\n\n"
-        f"IMOEX: {imoex}\n\n"
-        "📊 Стадии рынка:\n"
-        f"🟢 Накопление: {stages['ACCUM']}\n"
-        f"📈 Импульс вверх: {stages['UP']}\n"
-        f"📉 Импульс вниз: {stages['DOWN']}\n\n"
-        "🔥 ТОП СИЛА:\n" +
-        "\n".join([f"{i+1}) {s[0]} ({s[1]}/5)" for i, s in enumerate(strengths)]) +
+        "🇷🇺 НЕДЕЛЬНЫЙ ОБЗОР МОЕХ (W1)\n\n"
+        f"IMOEX:\n"
+        f"Тренд: {imoex_trend}\n"
+        f"W1 диапазон: {imoex_low} – {imoex_high}\n\n"
+        "📊 Акции (W1):\n"
+        f"📈 UP: {counts['UP']}\n"
+        f"📉 DOWN: {counts['DOWN']}\n"
+        f"➖ FLAT: {counts['FLAT']}\n\n"
+        "🔥 В ФОКУСЕ НЕДЕЛИ:\n" +
+        ("\n".join(focus) if focus else "Нет явных точек") +
         f"\n\n🧠 {mode}"
     )
 
     send(msg)
-    last_daily_report_date = today
+    last_weekly_report = today
 
 # ===== START =====
-send("🇷🇺 МОЕХ-РАДАР\nДневной обзор «Где рынок» активирован")
+send("🇷🇺 МОЕХ-РАДАР\nНедельный обзор W1 активирован")
 
 while True:
     try:
-        send_daily_report()
+        send_weekly_report()
         time.sleep(CHECK_INTERVAL)
     except Exception as e:
         send(f"❌ ERROR: {e}")
