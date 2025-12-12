@@ -8,8 +8,9 @@ CHAT_ID = os.getenv("CHAT_ID")
 
 CHECK_INTERVAL = 300
 LOOKBACK_BARS = 20
-VOLUME_CONFIRM = 1.5
 INTERVAL_MIN = 60
+VOLUME_CONFIRM = 1.5
+RETEST_TOLERANCE = 0.003  # 0.3%
 
 TICKERS = [
     "SBER","GAZP","LKOH","ROSN","GMKN",
@@ -18,7 +19,6 @@ TICKERS = [
 ]
 
 MOEX = "https://iss.moex.com/iss/engines/stock/markets/shares/securities"
-
 state = {}
 
 # ---------- TELEGRAM ----------
@@ -55,19 +55,6 @@ def get_price(t):
     except:
         return None
 
-# ---------- STRENGTH ----------
-def calc_strength(vol_ratio, breakout_pct, repeat):
-    s = 1
-    if breakout_pct > 0.7: s += 2
-    elif breakout_pct > 0.3: s += 1
-
-    if vol_ratio >= 1.5: s += 1
-    if vol_ratio >= 2.5: s += 1
-
-    if repeat: s += 1
-
-    return max(1, min(5, s))
-
 # ---------- LOGIC ----------
 def check(t):
     candles = get_candles(t)
@@ -89,40 +76,45 @@ def check(t):
     if not price:
         return
 
-    s = state.setdefault(t, {
-        "status": "INSIDE",
-        "level": None
-    })
+    s = state.setdefault(t, {"status": "INSIDE", "level": None})
 
-    # ---------- FIRST BREAK ----------
+    # ----- FIRST BREAK UP -----
     if price > hi and s["status"] == "INSIDE":
-        s["status"] = "FIRST_UP"
+        s["status"] = "BROKE_UP"
         s["level"] = hi
         return
 
-    # ---------- REPEAT BREAK ----------
-    if price > hi and s["status"] == "FIRST_UP" and vol_ratio >= VOLUME_CONFIRM:
-        breakout_pct = (price - hi) / hi * 100
-        strength = calc_strength(vol_ratio, breakout_pct, repeat=True)
+    # ----- RETEST -----
+    if s["status"] == "BROKE_UP":
+        level = s["level"]
 
-        send(
-            f"🔥 ПОВТОРНЫЙ ПРОБОЙ ВВЕРХ (ОБЪЁМ)\n"
-            f"{t}\n"
-            f"Цена: {round(price,2)}\n"
-            f"Уровень: {round(hi,2)}\n\n"
-            f"Объём: {round(vol_ratio,2)}× среднего\n"
-            f"Сила пробоя: {'🔥'*strength} ({strength}/5)\n\n"
-            f"🧠 Вывод: ПРИОРИТЕТНЫЙ СИГНАЛ"
-        )
-        s["status"] = "CONFIRMED"
+        # цена вернулась к уровню
+        if abs(price - level) / level <= RETEST_TOLERANCE:
+            # удержание + объём
+            if vol_ratio >= VOLUME_CONFIRM and price >= level:
+                send(
+                    f"✅ РЕТЕСТ УРОВНЯ УДЕРЖАН\n"
+                    f"{t}\n"
+                    f"Цена: {round(price,2)}\n"
+                    f"Уровень: {round(level,2)}\n\n"
+                    f"Объём: {round(vol_ratio,2)}× среднего\n"
+                    f"Сила сценария: 🔥🔥🔥🔥🔥 (5/5)\n\n"
+                    f"🧠 Вывод: Уровень принят рынком"
+                )
+                s["status"] = "CONFIRMED"
 
-    # ---------- RESET ----------
-    if lo <= price <= hi:
+        # провал — сброс
+        if price < level * (1 - RETEST_TOLERANCE):
+            s["status"] = "INSIDE"
+            s["level"] = None
+
+    # ----- RESET -----
+    if lo <= price <= hi and s["status"] == "CONFIRMED":
         s["status"] = "INSIDE"
         s["level"] = None
 
 # ---------- START ----------
-send("🇷🇺 МОЕХ-РАДАР\nПовторный пробой с объёмом активирован")
+send("🇷🇺 МОЕХ-РАДАР\nРетест уровня после пробоя активирован")
 
 while True:
     try:
