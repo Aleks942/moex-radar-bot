@@ -3,24 +3,40 @@ import time
 import requests
 from datetime import datetime, timedelta
 
+# ===== ENV =====
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
+# ===== НАСТРОЙКИ =====
 CHECK_INTERVAL = 300
+
+DAILY_REPORT_HOUR = 19      # 19:00 МСК
+WEEKLY_REPORT_WEEKDAY = 0  # Понедельник
+WEEKLY_REPORT_HOUR = 10    # 10:00 МСК
 
 INTERVAL_H1 = 60
 INTERVAL_D1 = 1440
 INTERVAL_W1 = 10080
-
 LOOKBACK_BARS = 20
 
-TICKERS = [
+# ===== ПУЛЫ АКЦИЙ =====
+BASE_TICKERS = [
     "SBER","GAZP","LKOH","ROSN","GMKN",
     "NVTK","TATN","MTSS","ALRS","CHMF",
     "MAGN","PLZL"
 ]
 
+PRIORITY_TICKERS = [
+    "YNDX","OZON","AFKS","SMLT","PIKK",
+    "MOEX","RUAL","FLOT","POLY","SBERP"
+]
+
+ALL_TICKERS = list(dict.fromkeys(BASE_TICKERS + PRIORITY_TICKERS))
+
 MOEX = "https://iss.moex.com/iss/engines/stock/markets/shares/securities"
+
+last_daily_report = None
+last_weekly_report = None
 
 # ===== TELEGRAM =====
 def send(msg):
@@ -56,7 +72,7 @@ def get_price(ticker):
     except:
         return None
 
-# ===== TREND HELPERS =====
+# ===== HELPERS =====
 def trend_by_ema(candles, period=20):
     if len(candles) < period:
         return "FLAT"
@@ -69,11 +85,26 @@ def trend_by_ema(candles, period=20):
         return "DOWN"
     return "FLAT"
 
-# ===== MARKET MODE =====
+def get_stage_h1(ticker):
+    h1 = get_candles(ticker, INTERVAL_H1, 7)
+    if len(h1) < LOOKBACK_BARS:
+        return "ACCUM"
+    recent = h1[-LOOKBACK_BARS:]
+    highs = [c[2] for c in recent]
+    lows  = [c[3] for c in recent]
+    price = get_price(ticker)
+    if not price:
+        return "ACCUM"
+    if price > max(highs):
+        return "UP"
+    if price < min(lows):
+        return "DOWN"
+    return "ACCUM"
+
+# ===== РЕЖИМ РЫНКА =====
 def get_market_mode():
     score = 0
 
-    # 1️⃣ IMOEX D1 + W1
     imoex_d1 = trend_by_ema(get_candles("IMOEX", INTERVAL_D1, 120))
     imoex_w1 = trend_by_ema(get_candles("IMOEX", INTERVAL_W1, 400))
 
@@ -82,70 +113,97 @@ def get_market_mode():
     elif imoex_d1 == "DOWN" and imoex_w1 == "DOWN":
         score -= 1
 
-    # 2️⃣ Баланс стадий
     up_cnt = down_cnt = 0
-    for t in TICKERS:
-        h1 = get_candles(t, INTERVAL_H1, 7)
-        if len(h1) < LOOKBACK_BARS:
-            continue
-        recent = h1[-LOOKBACK_BARS:]
-        highs = [c[2] for c in recent]
-        lows  = [c[3] for c in recent]
-        price = get_price(t)
-        if not price:
-            continue
-        if price > max(highs):
-            up_cnt += 1
-        elif price < min(lows):
-            down_cnt += 1
+    for t in ALL_TICKERS:
+        st = get_stage_h1(t)
+        if st == "UP": up_cnt += 1
+        if st == "DOWN": down_cnt += 1
 
-    if up_cnt > down_cnt:
-        score += 1
-    elif down_cnt > up_cnt:
-        score -= 1
+    if up_cnt > down_cnt: score += 1
+    elif down_cnt > up_cnt: score -= 1
 
-    # 3️⃣ Качество среды (упрощённо)
-    if up_cnt >= 3:
-        score += 1
-    if down_cnt >= 3:
-        score -= 1
+    if up_cnt >= 3: score += 1
+    if down_cnt >= 3: score -= 1
 
-    if score >= 2:
-        return "🟢 РЫНОК СИЛЬНЫЙ"
-    if score <= -2:
-        return "🔴 РЫНОК СЛАБЫЙ"
+    if score >= 2: return "🟢 РЫНОК СИЛЬНЫЙ"
+    if score <= -2: return "🔴 РЫНОК СЛАБЫЙ"
     return "🟡 РЫНОК НЕЙТРАЛЬНЫЙ"
 
-# ===== DAILY REPORT =====
-last_report_date = None
-
+# ===== ОБЗОРЫ =====
 def send_daily_report():
-    global last_report_date
+    global last_daily_report
     now = datetime.utcnow() + timedelta(hours=3)
     today = now.date()
-
-    if last_report_date == today or now.hour != 19:
+    if last_daily_report == today or now.hour != DAILY_REPORT_HOUR:
         return
 
     mode = get_market_mode()
+    stages = {"UP":0,"DOWN":0,"ACCUM":0}
+    top = []
 
-    send(
+    for t in ALL_TICKERS:
+        st = get_stage_h1(t)
+        stages[st] += 1
+        strength = 4 if st in ("UP","DOWN") else 2
+        if t in PRIORITY_TICKERS:
+            strength = min(strength + 1, 5)
+        top.append((t, strength))
+
+    top = sorted(top, key=lambda x: x[1], reverse=True)[:3]
+
+    msg = (
         "🇷🇺 ОБЗОР МОЕХ — СЕГОДНЯ\n\n"
         f"🧠 РЕЖИМ РЫНКА:\n{mode}\n\n"
-        "Комментарий:\n"
-        "🟢 сильный — приоритет импульсы\n"
-        "🟡 нейтр — работа от уровней\n"
-        "🔴 слабый — защита капитала"
+        "📊 Стадии:\n"
+        f"🟢 Накопление: {stages['ACCUM']}\n"
+        f"📈 Импульс вверх: {stages['UP']}\n"
+        f"📉 Импульс вниз: {stages['DOWN']}\n\n"
+        "🔥 ТОП СИЛА:\n" +
+        "\n".join([f"{i+1}) {t} ({s}/5){' ⭐' if t in PRIORITY_TICKERS else ''}" for i,(t,s) in enumerate(top)])
     )
 
-    last_report_date = today
+    send(msg)
+    last_daily_report = today
+
+def send_weekly_report():
+    global last_weekly_report
+    now = datetime.utcnow() + timedelta(hours=3)
+    today = now.date()
+    if (last_weekly_report == today or
+        now.weekday() != WEEKLY_REPORT_WEEKDAY or
+        now.hour != WEEKLY_REPORT_HOUR):
+        return
+
+    imoex_trend = trend_by_ema(get_candles("IMOEX", INTERVAL_W1, 400))
+    counts = {"UP":0,"DOWN":0,"FLAT":0}
+    focus = []
+
+    for t in ALL_TICKERS:
+        w1 = trend_by_ema(get_candles(t, INTERVAL_W1, 400))
+        counts[w1] += 1
+        if t in PRIORITY_TICKERS:
+            focus.append(t)
+
+    msg = (
+        "🇷🇺 НЕДЕЛЬНЫЙ ОБЗОР МОЕХ (W1)\n\n"
+        f"IMOEX W1: {imoex_trend}\n\n"
+        "📊 Распределение:\n"
+        f"📈 UP: {counts['UP']}\n"
+        f"📉 DOWN: {counts['DOWN']}\n"
+        f"➖ FLAT: {counts['FLAT']}\n\n"
+        "⭐ Приоритеты недели:\n" + ", ".join(focus[:5])
+    )
+
+    send(msg)
+    last_weekly_report = today
 
 # ===== START =====
-send("🇷🇺 МОЕХ-РАДАР\nРежим рынка встроен")
+send("🇷🇺 МОЕХ-РАДАР\nПриоритетные акции подключены ⭐")
 
 while True:
     try:
         send_daily_report()
+        send_weekly_report()
         time.sleep(CHECK_INTERVAL)
     except Exception as e:
         send(f"❌ ERROR: {e}")
