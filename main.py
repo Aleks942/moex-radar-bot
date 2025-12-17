@@ -40,6 +40,7 @@ MOEX = "https://iss.moex.com/iss/engines/stock/markets/shares/securities"
 
 last_daily_report = None
 last_weekly_report = None
+last_start_in_memory = None
 
 # ===== TELEGRAM =====
 def send(msg):
@@ -63,23 +64,34 @@ def load_radar_state():
         return {}
 
 def save_radar_state(state):
-    with open(RADAR_STATE_FILE, "w") as f:
-        json.dump(state, f)
+    try:
+        with open(RADAR_STATE_FILE, "w") as f:
+            json.dump(state, f)
+    except:
+        pass
 
 def send_radar_start_once_per_day():
-    state = load_radar_state()
+    global last_start_in_memory
+
     today = (datetime.utcnow() + timedelta(hours=3)).strftime("%Y-%m-%d")
 
+    # защита в памяти
+    if last_start_in_memory == today:
+        return
+
+    state = load_radar_state()
     if state.get("last_start") == today:
+        last_start_in_memory = today
         return
 
     send(
-        "📡 Радар рынка активен\n"
-        "200 монет • 1h + 4h • стадии • сила • памятка • вывод"
+        "🇷🇺 МОЕХ-РАДАР АКТИВЕН\n"
+        "Акции РФ • H1 / D1 / W1 • стадии • сила • обзоры"
     )
 
     state["last_start"] = today
     save_radar_state(state)
+    last_start_in_memory = today
 
 # ===== DATA =====
 def get_candles(ticker, interval, days):
