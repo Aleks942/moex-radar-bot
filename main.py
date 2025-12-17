@@ -1,5 +1,6 @@
 import os
 import time
+import json
 import requests
 from datetime import datetime, timedelta
 
@@ -18,6 +19,8 @@ INTERVAL_H1 = 60
 INTERVAL_D1 = 1440
 INTERVAL_W1 = 10080
 LOOKBACK_BARS = 20
+
+RADAR_STATE_FILE = "radar_state.json"
 
 # ===== ПУЛЫ АКЦИЙ =====
 BASE_TICKERS = [
@@ -48,6 +51,35 @@ def send(msg):
         )
     except:
         pass
+
+# ===== RADAR START (1 РАЗ В СУТКИ) =====
+def load_radar_state():
+    if not os.path.exists(RADAR_STATE_FILE):
+        return {}
+    try:
+        with open(RADAR_STATE_FILE, "r") as f:
+            return json.load(f)
+    except:
+        return {}
+
+def save_radar_state(state):
+    with open(RADAR_STATE_FILE, "w") as f:
+        json.dump(state, f)
+
+def send_radar_start_once_per_day():
+    state = load_radar_state()
+    today = (datetime.utcnow() + timedelta(hours=3)).strftime("%Y-%m-%d")
+
+    if state.get("last_start") == today:
+        return
+
+    send(
+        "📡 Радар рынка активен\n"
+        "200 монет • 1h + 4h • стадии • сила • памятка • вывод"
+    )
+
+    state["last_start"] = today
+    save_radar_state(state)
 
 # ===== DATA =====
 def get_candles(ticker, interval, days):
@@ -198,7 +230,7 @@ def send_weekly_report():
     last_weekly_report = today
 
 # ===== START =====
-send("🇷🇺 МОЕХ-РАДАР\nПриоритетные акции подключены ⭐")
+send_radar_start_once_per_day()
 
 while True:
     try:
