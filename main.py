@@ -4,6 +4,7 @@ import json
 import requests
 from datetime import datetime, timedelta, timezone
 from statistics import mean
+from open_interest import get_open_interest_signal   # 🔹 добавлен импорт OI
 
 print("=== MOEX RADAR (AGG + SAFE + CONFIRM + STATS + REPORTS) ===", flush=True)
 
@@ -111,11 +112,6 @@ def save_state(state: dict):
 # DATA (SAFE PARSE)
 # =========================
 def get_candles(ticker: str, interval: int, days: int):
-    """
-    Возвращает (columns, data)
-    columns: список названий колонок
-    data: список строк
-    """
     try:
         r = requests.get(
             f"{MOEX}/{ticker}/candles.json",
@@ -142,10 +138,6 @@ def col_idx(cols, name):
         return None
 
 def extract_series(cols, data, n):
-    """
-    Универсально достаём high/low/close/volume по именам колонок.
-    Если какой-то колонки нет — возвращаем None в соответствующем списке.
-    """
     if not cols or not data:
         return [], [], [], []
 
@@ -159,7 +151,6 @@ def extract_series(cols, data, n):
     highs, lows, closes, vols = [], [], [], []
 
     for row in tail:
-        # row может быть короче чем cols, поэтому каждое чтение защищаем
         try:
             close = float(row[i_close]) if i_close is not None and i_close < len(row) and row[i_close] is not None else None
             high  = float(row[i_high])  if i_high  is not None and i_high  < len(row) and row[i_high]  is not None else None
@@ -192,7 +183,6 @@ def ema_simple(values, period):
 # INDEX TREND (IMOEX)
 # =========================
 def index_trend():
-    # D1 candles: interval=24 (в ISS candles так обычно)
     cols, data = get_candles(INDEX_TICKER, 24, 220)
     _, _, closes, _ = extract_series(cols, data, 60)
     if len(closes) < EMA_PERIOD:
@@ -220,14 +210,9 @@ def market_mode_text(tr):
 # STAGES + SIGNALS
 # =========================
 def stage_and_signal(ticker: str, idx_tr: str):
-    """
-    Возвращает:
-    stage, direction, strength(1-5), vol_mult, h1_chg, d1_chg, reasons, is_agg, is_safe, is_overheat
-    """
-    # H1
     cols_h1, data_h1 = get_candles(ticker, 60, 20)
     highs, lows, closes, vols = extract_series(cols_h1, data_h1, LOOKBACK_H1_BARS)
-    if len(closes) < LOOKBACK_H1_BARS or len(highs) < LOOKBACK_H1_BARS or len(lows) < LOOKBACK_H1_BARS:
+    if len(closes) < LOOKBACK_H1_BARS:
         return None
 
     price = closes[-1]
@@ -238,26 +223,22 @@ def stage_and_signal(ticker: str, idx_tr: str):
     h1_chg = pct(price, h1_prev)
     direction = "UP" if h1_chg >= 0 else "DOWN"
 
-    # объём H1
     vol_now = vols[-1] if vols else 0.0
     vol_avg = mean(vols[:-1]) if len(vols) > 6 else (mean(vols) if vols else 0.0)
     vol_mult = (vol_now / vol_avg) if vol_avg and vol_avg > 0 else 0.0
 
-    # D1
     cols_d1, data_d1 = get_candles(ticker, 24, 450)
     _, _, d1_closes, _ = extract_series(cols_d1, data_d1, 60)
     d1_last = d1_closes[-1] if d1_closes else None
     d1_prev = d1_closes[-2] if len(d1_closes) >= 2 else d1_last
     d1_chg = pct(d1_last, d1_prev)
 
-    # перегрев D1 за 5 баров
     is_overheat = False
     if len(d1_closes) >= 6:
         d1_5 = pct(d1_closes[-1], d1_closes[-6])
         if abs(d1_5) >= OVERHEAT_D1_PCT:
             is_overheat = True
 
-    # стадия + сила
     stage = "ACCUM"
     reasons = []
     strength = 0
@@ -274,13 +255,11 @@ def stage_and_signal(ticker: str, idx_tr: str):
         reasons.append("Выход вниз из диапазона H1")
         strength += 1
     else:
-        # накопление + рост объёма
         rng = (hi - lo) / price * 100.0 if price else 0.0
         if rng <= 2.0 and vol_mult >= 1.3:
             reasons.append("Сжатие диапазона + рост объёма")
             strength += 1
 
-    # объём сила
     if vol_mult >= 1.5:
         strength += 1
         reasons.append(f"Объём x{vol_mult:.2f}")
@@ -289,12 +268,10 @@ def stage_and_signal(ticker: str, idx_tr: str):
     if vol_mult >= 3.0:
         strength += 1
 
-    # согласие H1 и D1
     if d1_chg * h1_chg > 0 and abs(d1_chg) > 0.2:
         strength += 1
         reasons.append("H1 + D1 в одну сторону")
 
-    # индекс фильтр
     if idx_tr == "UP" and direction == "UP":
         strength += 1
         reasons.append("IMOEX поддерживает вверх")
@@ -306,19 +283,16 @@ def stage_and_signal(ticker: str, idx_tr: str):
     elif idx_tr == "UP" and direction == "DOWN":
         reasons.append("IMOEX против направления")
 
-    # приоритет
     if ticker in PRIORITY_TICKERS:
         strength += 1
         reasons.append("Приоритетная бумага")
 
-    # перегрев режет сигналы
     if is_overheat:
         stage = "OVERHEAT"
         reasons.append("Перегрев по D1")
 
     strength = max(1, min(strength, 5))
 
-    # AGG / SAFE
     is_agg = (vol_mult >= AGG_VOL_MULT_MIN and stage in ("IMPULSE_UP", "IMPULSE_DOWN") and not is_overheat)
 
     idx_ok = (idx_tr == "FLAT") or (idx_tr == "UP" and direction == "UP") or (idx_tr == "DOWN" and direction == "DOWN")
@@ -360,7 +334,6 @@ def run():
             "week": week_key, "w_agg": 0, "w_safe": 0, "w_confirmed": 0
         }
 
-    # стартовое сообщение 1 раз в сутки
     if state.get("start_day") != day_key:
         send("🇷🇺 <b>MOEX-радар активен</b>\nАкции РФ • H1 + D1 • AGG + SAFE • подтверждение • статистика")
         state["start_day"] = day_key
@@ -374,7 +347,6 @@ def run():
             day_key = now.strftime("%Y-%m-%d")
             week_key = now.strftime("%G-%V")
 
-            # rollover
             if stats.get("day") != day_key:
                 stats["day"] = day_key
                 stats["agg"] = 0
@@ -403,9 +375,18 @@ def run():
                 elif agg >= 6 and rate < 12:
                     quality = "🔴 ШУМНОЕ"
 
+                # 🔹 OI BLOCK START
+                try:
+                    oi = get_open_interest_signal()
+                    oi_text = f"\n{oi['text']}\n"
+                except Exception as e:
+                    oi_text = f"\n⚠️ Open Interest недоступен ({e})\n"
+                # 🔹 OI BLOCK END
+
                 send(
                     "🇷🇺 <b>ОБЗОР МОЕХ — СЕГОДНЯ</b>\n\n"
-                    f"🧠 Режим рынка:\n{mode_text}\n\n"
+                    f"🧠 Режим рынка:\n{mode_text}\n"
+                    f"{oi_text}\n"
                     f"AGGRESSIVE: {agg}\n"
                     f"SAFE: {safe}\n"
                     f"Подтверждений: {conf}\n"
@@ -427,7 +408,6 @@ def run():
                 )
                 state["last_weekly_week"] = week_key
 
-            # RADAR
             now_ts = datetime.now(timezone.utc).timestamp()
 
             for t in ALL_TICKERS:
@@ -446,11 +426,9 @@ def run():
 
                 sig_type = "SAFE" if is_safe else "AGG"
 
-                # анти-дубликат
                 if cs.get("last_type") == sig_type and cs.get("last_stage") == stage and cs.get("last_strength") == strength:
                     continue
 
-                # confirm AGG -> SAFE
                 confirmed = False
                 confirmed_tag = ""
                 if sig_type == "SAFE":
@@ -470,52 +448,5 @@ def run():
                     title = f"✅ <b>SAFE</b>{confirmed_tag}"
                     conclusion = "🟢 <b>МОЖНО ПЛАНИРОВАТЬ</b>\n(вход только по структуре)"
 
-                msg = (
-                    f"{title}\n"
-                    f"{emoji} <b>{t}</b>\n"
-                    f"Стадия: <b>{stage}</b>\n"
-                    f"Сила: {fire} ({strength}/5)\n\n"
-                    f"H1: {h1_chg:.2f}% | D1: {d1_chg:.2f}%\n"
-                    f"Объём: x{vol_mult:.2f}\n\n"
-                    f"Причины:\n• " + "\n• ".join(reasons[:10]) +
-                    f"\n\n{memo_intraday()}\n\n"
-                    f"🧠 <b>ВЫВОД</b>:\n{conclusion}"
-                )
+                msg =
 
-                send(msg)
-
-                # update state for ticker
-                cs["last_sent_ts"] = now_ts
-                cs["last_type"] = sig_type
-                cs["last_stage"] = stage
-                cs["last_strength"] = strength
-
-                if sig_type == "AGG":
-                    cs["last_agg_ts"] = now_ts
-                    cs["last_agg_dir"] = direction
-
-                coins_state[t] = cs
-
-                # stats
-                if sig_type == "AGG":
-                    stats["agg"] = stats.get("agg", 0) + 1
-                    stats["w_agg"] = stats.get("w_agg", 0) + 1
-                else:
-                    stats["safe"] = stats.get("safe", 0) + 1
-                    stats["w_safe"] = stats.get("w_safe", 0) + 1
-                    if confirmed:
-                        stats["confirmed"] = stats.get("confirmed", 0) + 1
-                        stats["w_confirmed"] = stats.get("w_confirmed", 0) + 1
-
-            # save state
-            state["coins"] = coins_state
-            state["stats"] = stats
-            save_state(state)
-
-        except Exception as e:
-            send(f"❌ <b>BOT ERROR</b>: {e}")
-
-        time.sleep(CHECK_INTERVAL_SEC)
-
-if __name__ == "__main__":
-    run()
