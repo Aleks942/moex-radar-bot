@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from statistics import mean
 from open_interest import get_open_interest_signal   # 🔹 импорт OI (как у тебя)
 
-print("=== MOEX RADAR (FAST + AGG + SAFE + CONFIRM + STATS + REPORTS) ===", flush=True)
+print("=== MOEX RADAR (FAST + AGG + SAFE + CONFIRM + FLOW PRO + STATS + REPORTS) ===", flush=True)
 
 # =========================
 # ENV
@@ -52,6 +52,23 @@ FAST_MOVE_MIN_PCT = 0.9        # импульс одной 15m свечи ≥ 0.
 FAST_VOL_MULT_MIN = 1.3        # объём ≥ x1.3
 FAST_COOLDOWN_MIN = 120        # анти-спам FAST на тикер (2 часа)
 
+# =========================
+# FLOW PRO (M5) — НОВЫЙ СЛОЙ, ПОВЕРХ
+# =========================
+FLOW_INTERVAL_MIN = 5
+FLOW_DAYS = 10
+FLOW_LOOKBACK_BARS = 60        # окно для средней (5 часов на M5)
+FLOW_TREND_BARS = 3            # 3 свечи в одну сторону
+FLOW_BREAK_BARS = 24           # локальный уровень (2 часа на M5)
+
+FLOW_PUBLISH_SCORE_MIN = 8     # проф. порог публикации
+FLOW_PUBLISH_DELTA_MIN = 3     # публикуем если скачок score >= 3
+FLOW_COOLDOWN_SEC = 60 * 20    # анти-спам на FLOW (если надо, но мы итак шлём только по изменениям)
+
+EVENING_START_HOUR = 19        # MSK
+EVENING_THIN_VOL_RATIO = 0.60  # "тонкий рынок" если vol_now < 60% от локальной средней
+EVENING_SCORE_PENALTY = 2      # штраф score в вечерке
+
 STATE_DIR = os.getenv("STATE_DIR", ".")
 STATE_FILE = os.path.join(STATE_DIR, "moex_radar_state.json")
 
@@ -72,6 +89,55 @@ PRIORITY_TICKERS = [
 ALL_TICKERS = list(dict.fromkeys(BASE_TICKERS + PRIORITY_TICKERS))
 INDEX_TICKER = "IMOEX"
 
+# =========================
+# SECTORS (для синхронности/перетока)
+# можно расширять — это не ломает логику
+# =========================
+SECTOR_MAP = {
+    # Банки / финансы
+    "SBER": "BANKS",
+    "SBERP": "BANKS",
+    "VTBR": "BANKS",
+    "MOEX": "FIN",
+
+    # Нефть/газ
+    "GAZP": "OILGAS",
+    "LKOH": "OILGAS",
+    "ROSN": "OILGAS",
+    "NVTK": "OILGAS",
+    "TATN": "OILGAS",
+    "SNGS": "OILGAS",
+    "SNGSP": "OILGAS",
+
+    # Металлы/майнинг
+    "GMKN": "METALS",
+    "CHMF": "METALS",
+    "MAGN": "METALS",
+    "RUAL": "METALS",
+    "ALRS": "METALS",
+    "PLZL": "METALS",
+    "POLY": "METALS",
+
+    # Телеком
+    "MTSS": "TELCO",
+
+    # Девелоперы
+    "PIKK": "DEV",
+    "SMLT": "DEV",
+
+    # Тех/ритейл/прочее
+    "YNDX": "TECH",
+    "OZON": "RETAIL",
+    "AFKS": "HOLD",
+    "FLOT": "TRANSPORT",
+}
+
+def get_sector(ticker: str) -> str:
+    return SECTOR_MAP.get(ticker, "OTHER")
+
+# =========================
+# MOEX ISS
+# =========================
 MOEX = "https://iss.moex.com/iss/engines/stock/markets/shares/securities"
 
 # =========================
@@ -387,6 +453,132 @@ def fast_signal_m15(ticker: str):
     return direction, move, vol_mult, rng, reasons
 
 # =========================
+# FLOW PRO (M5) — НОВЫЙ СЛОЙ
+# =========================
+def flow_score_m5(ticker: str, idx_tr: str, now_dt: datetime):
+    """
+    FLOW PRO score 0-10:
+      +2 vol > 1.8x
+      +3 vol > 2.5x
+      +2 3 свечи в одну сторону (close-close)
+      +1 range_expand (last range > avg range)
+      +1 breakout локального уровня (2 часа)
+      +2 сектор синхронен (это в агрегаторе, не тут)
+    Возвращает: (score, direction, vol_mult, move_last, reasons[])
+    """
+    cols, data = get_candles(ticker, FLOW_INTERVAL_MIN, FLOW_DAYS)
+    highs, lows, closes, vols = extract_series(cols, data, FLOW_LOOKBACK_BARS + FLOW_BREAK_BARS + 5)
+    if len(closes) < max(FLOW_LOOKBACK_BARS + 5, FLOW_BREAK_BARS + 5):
+        return None
+
+    price = closes[-1]
+    prev = closes[-2]
+    move_last = pct(price, prev)
+
+    vol_now = vols[-1]
+    vol_base = mean(vols[-FLOW_LOOKBACK_BARS:-1]) if len(vols) >= FLOW_LOOKBACK_BARS + 1 else (mean(vols[:-1]) if len(vols) > 3 else 0.0)
+    vol_mult = (vol_now / vol_base) if vol_base and vol_base > 0 else 0.0
+
+    # range expand
+    last_range = highs[-1] - lows[-1]
+    ranges = [(highs[i] - lows[i]) for i in range(max(0, len(highs) - FLOW_LOOKBACK_BARS), len(highs) - 1)]
+    avg_range = mean(ranges) if ranges else 0.0
+    range_expand = (avg_range > 0 and last_range > avg_range * 1.2)
+
+    # 3-bar trend
+    if len(closes) >= 4:
+        c1, c2, c3 = closes[-1], closes[-2], closes[-3]
+        up3 = (c1 > c2 > c3)
+        dn3 = (c1 < c2 < c3)
+    else:
+        up3 = dn3 = False
+
+    direction = "UP" if move_last >= 0 else "DOWN"
+    if up3:
+        direction = "UP"
+    if dn3:
+        direction = "DOWN"
+
+    # breakout (локальный уровень за 2 часа)
+    br_hi = max(highs[-FLOW_BREAK_BARS-1:-1])
+    br_lo = min(lows[-FLOW_BREAK_BARS-1:-1])
+    breakout = (price > br_hi) or (price < br_lo)
+
+    score = 0
+    reasons = []
+
+    # volume scoring
+    if vol_mult > 2.5:
+        score += 3
+        reasons.append(f"Объём x{vol_mult:.2f} (очень высокий)")
+    elif vol_mult > 1.8:
+        score += 2
+        reasons.append(f"Объём x{vol_mult:.2f}")
+
+    if up3 or dn3:
+        score += 2
+        reasons.append("3 свечи подряд в одну сторону")
+
+    if range_expand:
+        score += 1
+        reasons.append("Расширение диапазона")
+
+    if breakout:
+        score += 1
+        reasons.append("Пробой локального уровня (≈2ч)")
+
+    # H1 контекст через IMOEX (проф. фильтр направления)
+    # если IMOEX против — не запрещаем, но уменьшаем качество
+    if idx_tr == "UP" and direction == "DOWN":
+        reasons.append("IMOEX против движения")
+    if idx_tr == "DOWN" and direction == "UP":
+        reasons.append("IMOEX против движения")
+
+    # вечерний тонкий рынок (штраф)
+    if now_dt.hour >= EVENING_START_HOUR:
+        # сравним текущий объём с локальной средней — если слабый, штраф
+        local_avg = mean(vols[-12:-1]) if len(vols) >= 13 else vol_base  # ~55 минут
+        ratio = (vol_now / local_avg) if local_avg and local_avg > 0 else 1.0
+        if ratio < EVENING_THIN_VOL_RATIO:
+            score = max(0, score - EVENING_SCORE_PENALTY)
+            reasons.append(f"Вечерка тонкая (vol {ratio:.2f}×) → -{EVENING_SCORE_PENALTY}")
+
+    # легкий бонус за приоритетные тикеры (как у тебя)
+    if ticker in PRIORITY_TICKERS:
+        score = min(10, score + 1)
+        reasons.append("Приоритетная бумага (+1)")
+
+    score = max(0, min(score, 10))
+    return score, direction, vol_mult, move_last, reasons
+
+def sector_name(sector: str) -> str:
+    return {
+        "BANKS": "Банки",
+        "FIN": "Финансы",
+        "OILGAS": "Нефть/Газ",
+        "METALS": "Металлы",
+        "TELCO": "Телеком",
+        "DEV": "Девелоперы",
+        "TECH": "Тех",
+        "RETAIL": "Ритейл",
+        "HOLD": "Холдинги",
+        "TRANSPORT": "Транспорт",
+        "OTHER": "Другое",
+    }.get(sector, sector)
+
+def flow_dir_emoji(d: str) -> str:
+    return "📈" if d == "UP" else "📉"
+
+def flow_score_emoji(score: int) -> str:
+    if score >= 9:
+        return "🔴"
+    if score >= 8:
+        return "🟢"
+    if score >= 6:
+        return "🟡"
+    return "⚪"
+
+# =========================
 # MAIN
 # =========================
 def run():
@@ -398,7 +590,7 @@ def run():
     day_key = now.strftime("%Y-%m-%d")
     week_key = now.strftime("%G-%V")
 
-    # --- ИНИЦИАЛИЗАЦИЯ СТАТЫ (добавил fast, но старое не ломаю)
+    # --- ИНИЦИАЛИЗАЦИЯ СТАТЫ (добавил fast + flow, но старое не ломаю)
     if not stats:
         stats = {
             "day": day_key,
@@ -410,16 +602,31 @@ def run():
             "w_fast": 0,
             "w_agg": 0,
             "w_safe": 0,
-            "w_confirmed": 0
+            "w_confirmed": 0,
+
+            # FLOW PRO stats
+            "flow": 0,
+            "w_flow": 0,
+            "flow_shift": 0,
+            "w_flow_shift": 0,
+            "market_woke": 0,
+            "w_market_woke": 0,
         }
     else:
-        # защита на случай старого state без fast-полей
+        # защита на случай старого state без новых полей
         stats.setdefault("fast", 0)
         stats.setdefault("w_fast", 0)
 
+        stats.setdefault("flow", 0)
+        stats.setdefault("w_flow", 0)
+        stats.setdefault("flow_shift", 0)
+        stats.setdefault("w_flow_shift", 0)
+        stats.setdefault("market_woke", 0)
+        stats.setdefault("w_market_woke", 0)
+
     # стартовое сообщение раз в сутки (как у тебя)
     if state.get("start_day") != day_key:
-        send("🇷🇺 <b>MOEX-радар активен</b>\nАкции РФ • M15 + H1 + D1 • FAST + AGG + SAFE • подтверждение • статистика")
+        send("🇷🇺 <b>MOEX-радар активен</b>\nАкции РФ • M5 + M15 + H1 + D1 • FAST + AGG + SAFE • FLOW PRO • подтверждение • статистика")
         state["start_day"] = day_key
         state["coins"] = coins_state
         state["stats"] = stats
@@ -439,12 +646,20 @@ def run():
                 stats["safe"] = 0
                 stats["confirmed"] = 0
 
+                stats["flow"] = 0
+                stats["flow_shift"] = 0
+                stats["market_woke"] = 0
+
             if stats.get("week") != week_key:
                 stats["week"] = week_key
                 stats["w_fast"] = 0
                 stats["w_agg"] = 0
                 stats["w_safe"] = 0
                 stats["w_confirmed"] = 0
+
+                stats["w_flow"] = 0
+                stats["w_flow_shift"] = 0
+                stats["w_market_woke"] = 0
 
             idx_tr = index_trend()
             mode_text = market_mode_text(idx_tr)
@@ -455,6 +670,10 @@ def run():
                 agg = stats.get("agg", 0)
                 safe = stats.get("safe", 0)
                 conf = stats.get("confirmed", 0)
+                flow = stats.get("flow", 0)
+                shift = stats.get("flow_shift", 0)
+                woke = stats.get("market_woke", 0)
+
                 rate = (conf / agg * 100.0) if agg > 0 else 0.0
 
                 quality = "🟡 НЕЙТРАЛЬНОЕ"
@@ -478,6 +697,9 @@ def run():
                     f"AGGRESSIVE: {agg}\n"
                     f"SAFE: {safe}\n"
                     f"Подтверждений: {conf}\n"
+                    f"FLOW PRO (score≥{FLOW_PUBLISH_SCORE_MIN}): {flow}\n"
+                    f"Перетоков: {shift}\n"
+                    f"Рынок проснулся: {woke}\n"
                     f"Качество: <b>{quality}</b>\n"
                 )
                 state["last_daily_day"] = day_key
@@ -494,11 +716,206 @@ def run():
                     f"AGGRESSIVE: {stats.get('w_agg', 0)}\n"
                     f"SAFE: {stats.get('w_safe', 0)}\n"
                     f"Подтверждений: {stats.get('w_confirmed', 0)}\n"
+                    f"FLOW PRO (score≥{FLOW_PUBLISH_SCORE_MIN}): {stats.get('w_flow', 0)}\n"
+                    f"Перетоков: {stats.get('w_flow_shift', 0)}\n"
+                    f"Рынок проснулся: {stats.get('w_market_woke', 0)}\n"
                 )
                 state["last_weekly_week"] = week_key
 
             now_ts = datetime.now(timezone.utc).timestamp()
 
+            # =========================
+            # FLOW PRO — СЧИТАЕМ СНАЧАЛА ВСЁ, ПОТОМ ПУБЛИКУЕМ ЛУЧШЕЕ
+            # =========================
+            flow_rows = []  # (ticker, sector, score, dir, vol_mult, move, reasons)
+            sector_buckets = {}  # sector -> list of rows with score>=FLOW_PUBLISH_SCORE_MIN
+
+            for t in ALL_TICKERS:
+                fr = flow_score_m5(t, idx_tr, now)
+                if not fr:
+                    continue
+                score, fdir, vol_mult, move_last, reasons = fr
+                sector = get_sector(t)
+                row = (t, sector, score, fdir, vol_mult, move_last, reasons)
+                flow_rows.append(row)
+
+                if score >= FLOW_PUBLISH_SCORE_MIN:
+                    sector_buckets.setdefault(sector, []).append(row)
+
+            # секторная синхронность: если в секторе 2+ тикера score>=8 и в одну сторону → +2 к каждому (кап, не выше 10)
+            boosted = {}
+            for sector, rows in sector_buckets.items():
+                if len(rows) < 2:
+                    continue
+                up = [r for r in rows if r[3] == "UP"]
+                dn = [r for r in rows if r[3] == "DOWN"]
+
+                dominant = None
+                if len(up) >= 2:
+                    dominant = "UP"
+                elif len(dn) >= 2:
+                    dominant = "DOWN"
+
+                if dominant:
+                    for r in rows:
+                        if r[3] != dominant:
+                            continue
+                        t, sec, sc, d, vm, mv, rs = r
+                        sc2 = min(10, sc + 2)
+                        rs2 = rs + [f"Сектор синхронен (+2)"]
+                        boosted[t] = (t, sec, sc2, d, vm, mv, rs2)
+
+            # применяем буст
+            final_flow = []
+            for r in flow_rows:
+                t = r[0]
+                if t in boosted:
+                    final_flow.append(boosted[t])
+                else:
+                    final_flow.append(r)
+
+            # обновим sector_buckets после буста
+            sector_buckets2 = {}
+            for r in final_flow:
+                t, sector, score, fdir, vol_mult, move_last, reasons = r
+                if score >= FLOW_PUBLISH_SCORE_MIN:
+                    sector_buckets2.setdefault(sector, []).append(r)
+
+            # РЫНОК ПРОСНУЛСЯ: 3 сектора активны (имеют score>=8) + не FLAT по IMOEX (чтобы не ловить боковик)
+            woke = False
+            active_sectors = [s for s, rows in sector_buckets2.items() if len(rows) >= 1]
+            if len(active_sectors) >= 3 and idx_tr != "FLAT":
+                # анти-спам: 1 раз в 2 часа
+                last_woke_ts = state.get("last_market_woke_ts", 0)
+                if (not last_woke_ts) or (now_ts - last_woke_ts) >= (2 * 3600):
+                    woke = True
+                    state["last_market_woke_ts"] = now_ts
+
+            if woke:
+                send(
+                    "🌪 <b>РЫНОК ПРОСНУЛСЯ</b>\n"
+                    f"{mode_text}\n"
+                    f"Активные сектора: " + ", ".join([sector_name(s) for s in active_sectors[:6]]) + "\n"
+                    "Ожидается волатильная сессия — работаем по потоку.\n"
+                )
+                stats["market_woke"] = stats.get("market_woke", 0) + 1
+                stats["w_market_woke"] = stats.get("w_market_woke", 0) + 1
+
+            # =========================
+            # ДАЛЬШЕ — ТВОЙ ЦИКЛ ПО ТИКЕРАМ (FAST + AGG/SAFE), НО ДОБАВЛЯЕМ ПУБЛИКАЦИЮ FLOW
+            # =========================
+            # Для FLOW публикуем:
+            #  - score >= 8
+            #  - и (изменился score) или (delta>=3) или (переток начался)
+            #  - и анти-спам FLOW_COOLDOWN_SEC (страховка)
+            # Публикуем ТОЛЬКО лучшие (до 1-2 в цикл), чтобы не шуметь.
+            published_flow = 0
+
+            # кандидаты — отсортируем по score desc, потом по vol_mult desc
+            flow_candidates = sorted(
+                [r for r in final_flow if r[2] >= FLOW_PUBLISH_SCORE_MIN],
+                key=lambda x: (x[2], x[4]),
+                reverse=True
+            )
+
+            # вычислим переток: было <4, стало >=8, vol_mult>=2, и в секторе 2 тикера >=8 в одну сторону
+            def is_flow_shift(ticker: str, sector: str, score: int, fdir: str, vol_mult: float, cs: dict):
+                prev = cs.get("flow_score_prev", None)
+                if prev is None:
+                    return False
+                if prev >= 4:
+                    return False
+                if score < FLOW_PUBLISH_SCORE_MIN:
+                    return False
+                if vol_mult < 2.0:
+                    return False
+
+                # секторное подтверждение
+                rows = sector_buckets2.get(sector, [])
+                same_dir = [r for r in rows if r[3] == fdir and r[2] >= FLOW_PUBLISH_SCORE_MIN]
+                return len(same_dir) >= 2
+
+            for r in flow_candidates:
+                if published_flow >= 2:  # жёсткий лимит на цикл
+                    break
+
+                t, sector, score, fdir, vol_mult, move_last, reasons = r
+                cs = coins_state.get(t, {})
+
+                last_flow_pub_ts = cs.get("last_flow_pub_ts", 0)
+                if last_flow_pub_ts and (now_ts - last_flow_pub_ts) < FLOW_COOLDOWN_SEC:
+                    # если слишком часто — не шлём
+                    continue
+
+                prev_score = cs.get("flow_score_prev", None)
+                last_pub_score = cs.get("flow_last_pub_score", None)
+
+                delta = 0
+                if prev_score is not None:
+                    delta = score - prev_score
+
+                # обновляем prev_score каждый цикл (даже если не публикуем)
+                cs["flow_score_prev"] = score
+
+                shift = is_flow_shift(t, sector, score, fdir, vol_mult, cs)
+
+                should_publish = False
+                if last_pub_score is None:
+                    # первый раз — только если сильный (>=8)
+                    should_publish = True
+                else:
+                    if score != last_pub_score:
+                        should_publish = True
+                    if abs(delta) >= FLOW_PUBLISH_DELTA_MIN:
+                        should_publish = True
+                    if shift:
+                        should_publish = True
+
+                if not should_publish:
+                    coins_state[t] = cs
+                    continue
+
+                # собираем секторный блок (топ-3 в секторе, same direction)
+                sector_rows = sector_buckets2.get(sector, [])
+                same_dir = [x for x in sector_rows if x[3] == fdir]
+                same_dir_sorted = sorted(same_dir, key=lambda x: x[2], reverse=True)[:3]
+
+                lines = []
+                for x in same_dir_sorted:
+                    tt, _, sc, dd, _, _, _ = x
+                    lines.append(f"{flow_score_emoji(sc)} <b>{tt}</b> — {sc}/10")
+
+                shift_tag = "\n⚡ <b>ПЕРЕТОК НАЧАЛСЯ</b>" if shift else ""
+                d_emoji = flow_dir_emoji(fdir)
+
+                msg = (
+                    f"🚨 <b>MARKET FLOW — MOEX</b>\n\n"
+                    f"🔥 Сектор: <b>{sector_name(sector)}</b>\n"
+                    + "\n".join(lines) + "\n\n"
+                    f"{d_emoji} M5 ход: {move_last:.2f}%\n"
+                    f"📈 Объём: x{vol_mult:.2f}\n"
+                    f"🎯 Score: <b>{score}/10</b>\n"
+                    f"{shift_tag}\n\n"
+                    "Причины:\n• " + "\n• ".join(reasons[:7])
+                )
+
+                send(msg)
+
+                cs["last_flow_pub_ts"] = now_ts
+                cs["flow_last_pub_score"] = score
+
+                stats["flow"] = stats.get("flow", 0) + 1
+                stats["w_flow"] = stats.get("w_flow", 0) + 1
+                if shift:
+                    stats["flow_shift"] = stats.get("flow_shift", 0) + 1
+                    stats["w_flow_shift"] = stats.get("w_flow_shift", 0) + 1
+
+                coins_state[t] = cs
+                published_flow += 1
+
+            # =========================
+            # ТВОЯ ЛОГИКА ПО ТИКЕРАМ: FAST + AGG/SAFE (НЕ ТРОГАЮ)
+            # =========================
             for t in ALL_TICKERS:
                 cs = coins_state.get(t, {})
 
@@ -589,7 +1006,7 @@ def run():
 
                 send(msg)
 
-                # state update (как у тебя + fast отдельно выше)
+                # state update (как у тебя + flow отдельно выше)
                 cs["last_sent_ts"] = now_ts
                 cs["last_type"] = sig_type
                 cs["last_stage"] = stage
