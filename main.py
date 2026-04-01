@@ -892,7 +892,7 @@ def run():
                     f"🚨 <b>MARKET FLOW — MOEX</b>\n\n"
                     f"🔥 Сектор: <b>{sector_name(sector)}</b>\n"
                     + "\n".join(lines) + "\n\n"
-                    f"{d_emoji} M5 ход: {move_last:.2f}%\n"
+                    f"{d_emoji} M10 ход: {move_last:.2f}%\n"
                     f"📈 Объём: x{vol_mult:.2f}\n"
                     f"🎯 Score: <b>{score}/10</b>\n"
                     f"{shift_tag}\n\n"
