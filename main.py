@@ -402,11 +402,13 @@ def memo_intraday():
 # =========================
 def fast_signal_m15(ticker: str):
     """
+        """
     Умеренный интрадей FAST:
-    - есть флет (20 свечей M15) диапазон <= 2.5%
-    - импульс последней M15 свечи >= 0.9%
+    - есть флет (30 свечей M10) диапазон <= 2.5%
+    - импульс последней M10 свечи >= 0.6%
     - объём последней свечи >= x1.3 от среднего
-    - пробой high/low последних 3 часов (12 свечей M15)
+    - пробой high/low последних 3 часов (18 свечей M10)
+    """
     """
     cols, data = get_candles(ticker, FAST_INTERVAL_MIN, FAST_DAYS)
     highs, lows, closes, vols = extract_series(cols, data, FAST_LOOKBACK_BARS + FAST_BREAK_BARS + 5)
