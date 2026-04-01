@@ -291,7 +291,7 @@ def stage_and_signal(ticker: str, idx_tr: str):
     if len(closes) < LOOKBACK_H1_BARS:
         return None
 
-        price = closes[-1]
+    price = closes[-1]
 
     # диапазон считаем БЕЗ текущей свечи, иначе пробой сам себя душит
     if len(highs) < 2 or len(lows) < 2:
