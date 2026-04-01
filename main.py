@@ -401,15 +401,6 @@ def memo_intraday():
 # FAST (M10) — ДОБАВЛЕНО, НЕ ЛОМАЕТ AGG/SAFE
 # =========================
 def fast_signal_m15(ticker: str):
-    """
-        
-    Умеренный интрадей FAST:
-    - есть флет (30 свечей M10) диапазон <= 2.5%
-    - импульс последней M10 свечи >= 0.6%
-    - объём последней свечи >= x1.3 от среднего
-    - пробой high/low последних 3 часов (18 свечей M10)
-    
-    """
     cols, data = get_candles(ticker, FAST_INTERVAL_MIN, FAST_DAYS)
     highs, lows, closes, vols = extract_series(cols, data, FAST_LOOKBACK_BARS + FAST_BREAK_BARS + 5)
     if len(closes) < FAST_LOOKBACK_BARS + 2 or len(highs) < FAST_LOOKBACK_BARS + 2 or len(vols) < FAST_LOOKBACK_BARS + 2:
@@ -437,9 +428,10 @@ def fast_signal_m15(ticker: str):
     if vol_mult < FAST_VOL_MULT_MIN:
         return None
 
-    # 4) пробой последних 3 часов (12 свечей)
+    # 4) пробой последних 3 часов
     if len(highs) < FAST_BREAK_BARS + 2:
         return None
+
     br_hi = max(highs[-FAST_BREAK_BARS-1:-1])
     br_lo = min(lows[-FAST_BREAK_BARS-1:-1])
 
@@ -452,13 +444,13 @@ def fast_signal_m15(ticker: str):
         return None
 
     reasons = [
-        f"Флет M15: {rng:.2f}%",
-        f"Импульс M15: {move:.2f}%",
+        f"Флет M10: {rng:.2f}%",
+        f"Импульс M10: {move:.2f}%",
         f"Объём x{vol_mult:.2f}",
         "Пробой диапазона 3ч"
     ]
-    return direction, move, vol_mult, rng, reasons
 
+    return direction, move, vol_mult, rng, reasons
 # =========================
 # FLOW PRO (M5) — НОВЫЙ СЛОЙ
 # =========================
