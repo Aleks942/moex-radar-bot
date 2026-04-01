@@ -291,9 +291,14 @@ def stage_and_signal(ticker: str, idx_tr: str):
     if len(closes) < LOOKBACK_H1_BARS:
         return None
 
-    price = closes[-1]
-    hi = max(highs)
-    lo = min(lows)
+        price = closes[-1]
+
+    # диапазон считаем БЕЗ текущей свечи, иначе пробой сам себя душит
+    if len(highs) < 2 or len(lows) < 2:
+        return None
+
+    hi = max(highs[:-1])
+    lo = min(lows[:-1])
 
     h1_prev = closes[-2] if len(closes) >= 2 else closes[-1]
     h1_chg = pct(price, h1_prev)
