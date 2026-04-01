@@ -663,6 +663,12 @@ def run():
 
             idx_tr = index_trend()
             mode_text = market_mode_text(idx_tr)
+                        # DEBUG: проверка свечей M5 / M15 / H1
+            if state.get("debug_once") != day_key:
+                for tf in [5, 15, 60, 24]:
+                    cols_dbg, data_dbg = get_candles("SBER", tf, 10)
+                    send(f"DEBUG SBER TF={tf}: candles={len(data_dbg)} cols={len(cols_dbg)}")
+                state["debug_once"] = day_key
 
             # DAILY REPORT
             if should_fire_at(now, DAILY_REPORT_HOUR, DAILY_REPORT_MINUTE) and state.get("last_daily_day") != day_key:
