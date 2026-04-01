@@ -43,12 +43,12 @@ WEEKLY_REPORT_HOUR = 10
 WEEKLY_REPORT_MINUTE = 0
 
 # --- FAST (интрадей M15) — ДОБАВЛЕНО, но ничего старого не трогаем
-FAST_INTERVAL_MIN = 15
+FAST_INTERVAL_MIN = 10
 FAST_DAYS = 7
-FAST_LOOKBACK_BARS = 20        # флет-окно
-FAST_BREAK_BARS = 12           # "последние 3 часа" (12 свечей по 15m)
+FAST_LOOKBACK_BARS = 30        # флет-окно ≈ 5 часов (30 * 10m)
+FAST_BREAK_BARS = 18           # "последние 3 часа" (18 свечей по 10m)
 FAST_RANGE_MAX_PCT = 2.5       # диапазон флета ≤ 2.5%
-FAST_MOVE_MIN_PCT = 0.9        # импульс одной 15m свечи ≥ 0.9%
+FAST_MOVE_MIN_PCT = 0.6        # импульс одной 10m свечи ≥ 0.6%
 FAST_VOL_MULT_MIN = 1.3        # объём ≥ x1.3
 FAST_COOLDOWN_MIN = 120        # анти-спам FAST на тикер (2 часа)
 
