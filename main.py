@@ -55,11 +55,11 @@ FAST_COOLDOWN_MIN = 120        # анти-спам FAST на тикер (2 ча�
 # =========================
 # FLOW PRO (M5) — НОВЫЙ СЛОЙ, ПОВЕРХ
 # =========================
-FLOW_INTERVAL_MIN = 5
+FLOW_INTERVAL_MIN = 10
 FLOW_DAYS = 10
-FLOW_LOOKBACK_BARS = 60        # окно для средней (5 часов на M5)
+FLOW_LOOKBACK_BARS = 30        # окно для средней ≈ 5 часов (30 * 10m)
 FLOW_TREND_BARS = 3            # 3 свечи в одну сторону
-FLOW_BREAK_BARS = 24           # локальный уровень (2 часа на M5)
+FLOW_BREAK_BARS = 12           # локальный уровень ≈ 2 часа (12 * 10m)
 
 FLOW_PUBLISH_SCORE_MIN = 8     # проф. порог публикации
 FLOW_PUBLISH_DELTA_MIN = 3     # публикуем если скачок score >= 3
