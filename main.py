@@ -625,7 +625,7 @@ def run():
 
     # стартовое сообщение раз в сутки (как у тебя)
     if state.get("start_day") != day_key:
-        send("🇷🇺 <b>MOEX-радар активен</b>\nАкции РФ • M5 + M15 + H1 + D1 • FAST + AGG + SAFE • FLOW PRO • подтверждение • статистика")
+        send("🇷🇺 <b>MOEX-радар активен</b>\nАкции РФ • M10 + H1 + D1 • FAST + AGG + SAFE • FLOW PRO • подтверждение • статистика")
         state["start_day"] = day_key
         state["coins"] = coins_state
         state["stats"] = stats
