@@ -398,7 +398,7 @@ def memo_intraday():
     )
 
 # =========================
-# FAST (M15) — ДОБАВЛЕНО, НЕ ЛОМАЕТ AGG/SAFE
+# FAST (M10) — ДОБАВЛЕНО, НЕ ЛОМАЕТ AGG/SAFE
 # =========================
 def fast_signal_m15(ticker: str):
     """
