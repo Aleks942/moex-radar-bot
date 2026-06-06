@@ -303,15 +303,20 @@ def get_last_change_pct(ticker: str, interval: int = 10, days: int = 5):
 
 
 def detect_market_regime():
-    """
-    MARKET REGIME:
-    BR вверх + Si вниз + IMOEX вверх = лучший LONG режим.
-    Пока это мягкий фильтр, он НЕ блокирует сигналы.
-    """
 
+    print("[MARKET_REGIME_START]", flush=True)
+
+    print("[BR_START]", flush=True)
     br_change = get_last_change_pct(BR_TICKER, 10, 5)
+    print("[BR_END]", br_change, flush=True)
+
+    print("[SI_START]", flush=True)
     si_change = get_last_change_pct(SI_TICKER, 10, 5)
+    print("[SI_END]", si_change, flush=True)
+
+    print("[IMOEX_START]", flush=True)
     imoex_change = get_last_change_pct(INDEX_TICKER, 10, 5)
+    print("[IMOEX_END]", imoex_change, flush=True)
 
     score = 0
     reasons = []
@@ -348,6 +353,8 @@ def detect_market_regime():
         regime = "MIXED"
     else:
         regime = "RISK_OFF"
+
+    print("[MARKET_REGIME_END]", flush=True)
 
     return regime, score, reasons, br_change, si_change, imoex_change
 
