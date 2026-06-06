@@ -31,6 +31,17 @@ AGG_VOL_MULT_MIN = 1.5
 AGG_BREAK_PCT_MIN = 0.35
 
 SAFE_MIN_STRENGTH = 4
+
+# =========================
+# PULLBACK
+# =========================
+PULLBACK_RETRACE_MIN = 30
+PULLBACK_RETRACE_MAX = 60
+
+PULLBACK_VOL_MAX = 0.80
+
+PULLBACK_COOLDOWN_MIN = 180
+
 CONFIRM_WINDOW_HOURS = 48
 
 OVERHEAT_D1_PCT = 8.0
@@ -543,6 +554,52 @@ def fast_signal_m15(ticker: str):
     ]
 
     return direction, move, vol_mult, rng, reasons
+
+# =========================
+# PULLBACK ENGINE
+# =========================
+def detect_pullback(ticker: str):
+
+    cols, data = get_candles(ticker, 60, 20)
+
+    highs, lows, closes, vols = extract_series(cols, data, 50)
+
+    if len(closes) < 20:
+        return None
+
+    swing_high = max(highs[-20:])
+    swing_low = min(lows[-20:])
+
+    impulse_size = swing_high - swing_low
+
+    if impulse_size <= 0:
+        return None
+
+    current_price = closes[-1]
+
+    retrace_pct = (
+        (swing_high - current_price)
+        / impulse_size
+    ) * 100
+
+    vol_now = vols[-1]
+    vol_avg = mean(vols[-10:-1])
+
+    vol_ratio = (
+        vol_now / vol_avg
+        if vol_avg > 0 else 1
+    )
+
+    if (
+        PULLBACK_RETRACE_MIN <= retrace_pct <= PULLBACK_RETRACE_MAX
+        and vol_ratio <= PULLBACK_VOL_MAX
+    ):
+        return (
+            retrace_pct,
+            vol_ratio
+        )
+
+    return None
 # =========================
 # FLOW PRO (M5) — НОВЫЙ СЛОЙ
 # =========================
