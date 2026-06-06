@@ -807,7 +807,6 @@ def run():
                 send(
                     "🇷🇺 <b>НЕДЕЛЬНЫЙ ОБЗОР МОЕХ</b>\n\n"
                     f"{mode_text}\n\n"
-                    f"🌍 MARKET REGIME:\n{regime_text}\n\n"
                     f"FAST: {stats.get('w_fast', 0)}\n"
                     f"AGGRESSIVE: {stats.get('w_agg', 0)}\n"
                     f"SAFE: {stats.get('w_safe', 0)}\n"
