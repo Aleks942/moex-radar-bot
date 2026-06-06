@@ -747,6 +747,9 @@ def run():
 
             idx_tr = index_trend()
             mode_text = market_mode_text(idx_tr)
+
+            market_regime, regime_score, regime_reasons, br_chg, si_chg, imoex_chg = detect_market_regime()
+            regime_text = market_regime_text(market_regime, regime_score, regime_reasons)
                         
 
             # DAILY REPORT
