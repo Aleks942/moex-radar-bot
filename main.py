@@ -801,6 +801,7 @@ def run():
                 send(
                     "🇷🇺 <b>НЕДЕЛЬНЫЙ ОБЗОР МОЕХ</b>\n\n"
                     f"{mode_text}\n\n"
+                    f"🌍 MARKET REGIME:\n{regime_text}\n\n"
                     f"FAST: {stats.get('w_fast', 0)}\n"
                     f"AGGRESSIVE: {stats.get('w_agg', 0)}\n"
                     f"SAFE: {stats.get('w_safe', 0)}\n"
@@ -884,6 +885,7 @@ def run():
                 send(
                     "🌪 <b>РЫНОК ПРОСНУЛСЯ</b>\n"
                     f"{mode_text}\n"
+                    f"🌍 {market_regime} ({regime_score}/3)\n"
                     f"Активные сектора: " + ", ".join([sector_name(s) for s in active_sectors[:6]]) + "\n"
                     "Ожидается волатильная сессия — работаем по потоку.\n"
                 )
