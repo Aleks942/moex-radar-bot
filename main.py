@@ -890,7 +890,6 @@ def run():
                 send(
                     "🌪 <b>РЫНОК ПРОСНУЛСЯ</b>\n"
                     f"{mode_text}\n"
-                    f"🌍 {market_regime} ({regime_score}/3)\n"
                     f"Активные сектора: " + ", ".join([sector_name(s) for s in active_sectors[:6]]) + "\n"
                     "Ожидается волатильная сессия — работаем по потоку.\n"
                 )
