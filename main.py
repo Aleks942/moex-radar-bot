@@ -786,8 +786,7 @@ def run():
 
                 send(
                     "🇷🇺 <b>ОБЗОР МОЕХ — СЕГОДНЯ</b>\n\n"
-                    f"🧠 Режим рынка:\n{mode_text}\n\n"
-                    f"🌍 MARKET REGIME:\n{regime_text}\n"
+                    f"🧠 Режим рынка:\n{mode_text}\n"
                     f"{oi_text}\n"
                     f"FAST: {fast}\n"
                     f"AGGRESSIVE: {agg}\n"
