@@ -90,6 +90,12 @@ ALL_TICKERS = list(dict.fromkeys(BASE_TICKERS + PRIORITY_TICKERS))
 INDEX_TICKER = "IMOEX"
 
 # =========================
+# MARKET REGIME TICKERS
+# =========================
+BR_TICKER = "BR"
+SI_TICKER = "Si"
+
+# =========================
 # SECTORS (для синхронности/перетока)
 # можно расширять — это не ломает логику
 # =========================
@@ -113,6 +119,7 @@ SECTOR_MAP = {
     "GMKN": "METALS",
     "CHMF": "METALS",
     "MAGN": "METALS",
+
     "RUAL": "METALS",
     "ALRS": "METALS",
     "PLZL": "METALS",
@@ -281,6 +288,84 @@ def market_mode_text(tr):
     if tr == "DOWN":
         return "🔴 РЫНОК СЛАБЫЙ (IMOEX DOWN)"
     return "🟡 РЫНОК НЕЙТРАЛЬНЫЙ (IMOEX FLAT)"
+
+# =========================
+# MARKET REGIME — BR + Si + IMOEX
+# =========================
+def get_last_change_pct(ticker: str, interval: int = 10, days: int = 5):
+    cols, data = get_candles(ticker, interval, days)
+    _, _, closes, _ = extract_series(cols, data, 5)
+
+    if len(closes) < 2:
+        return None
+
+    return pct(closes[-1], closes[-2])
+
+
+def detect_market_regime():
+    """
+    MARKET REGIME:
+    BR вверх + Si вниз + IMOEX вверх = лучший LONG режим.
+    Пока это мягкий фильтр, он НЕ блокирует сигналы.
+    """
+
+    br_change = get_last_change_pct(BR_TICKER, 10, 5)
+    si_change = get_last_change_pct(SI_TICKER, 10, 5)
+    imoex_change = get_last_change_pct(INDEX_TICKER, 10, 5)
+
+    score = 0
+    reasons = []
+
+    if br_change is not None and br_change > 0:
+        score += 1
+        reasons.append(f"BR растёт {br_change:.2f}%")
+    elif br_change is not None:
+        reasons.append(f"BR падает {br_change:.2f}%")
+    else:
+        reasons.append("BR недоступен")
+
+    if si_change is not None and si_change < 0:
+        score += 1
+        reasons.append(f"Si падает {si_change:.2f}%")
+    elif si_change is not None:
+        reasons.append(f"Si растёт {si_change:.2f}%")
+    else:
+        reasons.append("Si недоступен")
+
+    if imoex_change is not None and imoex_change > 0:
+        score += 1
+        reasons.append(f"IMOEX растёт {imoex_change:.2f}%")
+    elif imoex_change is not None:
+        reasons.append(f"IMOEX падает {imoex_change:.2f}%")
+    else:
+        reasons.append("IMOEX недоступен")
+
+    if score == 3:
+        regime = "LONG_REGIME"
+    elif score == 2:
+        regime = "SOFT_LONG"
+    elif score == 1:
+        regime = "MIXED"
+    else:
+        regime = "RISK_OFF"
+
+    return regime, score, reasons, br_change, si_change, imoex_change
+
+
+def market_regime_text(regime: str, score: int, reasons: list):
+    if regime == "LONG_REGIME":
+        title = "🟢 LONG режим"
+    elif regime == "SOFT_LONG":
+        title = "🟡 Мягкий LONG режим"
+    elif regime == "MIXED":
+        title = "⚪ Смешанный рынок"
+    else:
+        title = "🔴 RISK OFF"
+
+    return (
+        f"{title} ({score}/3)\n"
+        "Причины:\n• " + "\n• ".join(reasons)
+    )
 
 # =========================
 # STAGES + SIGNALS (ТВОЯ ЛОГИКА — НЕ ТРОГАЮ)
