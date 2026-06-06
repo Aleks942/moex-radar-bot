@@ -725,6 +725,7 @@ def run():
 
     while True:
         try:
+            print("[NEW_CYCLE]", flush=True)
             now = msk_now()
             day_key = now.strftime("%Y-%m-%d")
             week_key = now.strftime("%G-%V")
