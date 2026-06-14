@@ -483,7 +483,7 @@ def stage_and_signal(ticker: str, idx_tr: str):
     tf_ok = (d1_chg * h1_chg > 0) and (abs(d1_chg) > 0.2)
     is_safe = (is_agg and tf_ok and idx_ok and strength >= SAFE_MIN_STRENGTH)
 
-    return stage, direction, strength, vol_mult, h1_chg, d1_chg, reasons, is_agg, is_safe, is_overheat
+    return stage, direction, strength, vol_mult, h1_chg, d1_chg, reasons, is_agg, is_safe, is_overheat, price
 
 def stage_emoji(stage):
     if stage.startswith("IMPULSE"):
@@ -1112,7 +1112,7 @@ def run():
                     coins_state[t] = cs
                     continue
 
-                stage, direction, strength, vol_mult, h1_chg, d1_chg, reasons, is_agg, is_safe, _ = pack
+                stage, direction, strength, vol_mult, h1_chg, d1_chg, reasons, is_agg, is_safe, _, signal_price = pack
                 if not is_agg and not is_safe:
                     coins_state[t] = cs
                     continue
@@ -1164,6 +1164,10 @@ def run():
                 cs["last_type"] = sig_type
                 cs["last_stage"] = stage
                 cs["last_strength"] = strength
+                cs["last_signal_price"] = closes[-1] if "closes" in locals() and closes else None
+                cs["last_signal_direction"] = direction
+                cs["last_signal_type"] = sig_type
+                cs["last_signal_time"] = now_ts
 
                 if sig_type == "AGG":
                     cs["last_agg_ts"] = now_ts
