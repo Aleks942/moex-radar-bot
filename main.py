@@ -1168,6 +1168,7 @@ def run():
                 cs["last_signal_price"] = signal_price
                 cs["last_signal_direction"] = direction
                 cs["last_signal_type"] = sig_type
+                cs["last_signal_stage"] = stage
                 cs["last_signal_time"] = now_ts
 
                 cs["last_signal_time"] = now_ts
