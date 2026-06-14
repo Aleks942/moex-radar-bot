@@ -1169,7 +1169,17 @@ def run():
                 cs["last_signal_direction"] = direction
                 cs["last_signal_type"] = sig_type
                 cs["last_signal_time"] = now_ts
-               
+
+                cs["last_signal_time"] = now_ts
+
+                print(
+                    f"[SAVE_SIGNAL] {t} "
+                    f"{sig_type} "
+                    f"{direction} "
+                    f"{signal_price}",
+                    flush=True
+                )
+                               
 
                 if sig_type == "AGG":
                     cs["last_agg_ts"] = now_ts
