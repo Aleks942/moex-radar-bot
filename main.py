@@ -1164,6 +1164,10 @@ def run():
                 cs["last_type"] = sig_type
                 cs["last_stage"] = stage
                 cs["last_strength"] = strength
+                cs["last_signal_price"] = signal_price
+                cs["last_signal_direction"] = direction
+                cs["last_signal_type"] = sig_type
+                cs["last_signal_time"] = now_ts
                 cs["last_signal_price"] = closes[-1] if "closes" in locals() and closes else None
                 cs["last_signal_direction"] = direction
                 cs["last_signal_type"] = sig_type
