@@ -94,3 +94,53 @@ def get_open_interest_signal():
         short_phys = _integer(phys.get("open_position_short"))
         long_jur = _integer(jur.get("open_position_long"))
         short_jur = _integer(jur.get("open_position_short"))
+        positions = (long_phys, short_phys, long_jur, short_jur)
+        if min(positions) < 0 or sum(positions) <= 0:
+            raise ValueError("Нет корректных открытых позиций")
+        if long_phys + long_jur != short_phys + short_jur:
+            raise ValueError("Общие длинные и короткие позиции не совпадают")
+
+        signal = "neutral"
+        comment = "🟡 БЕЗ ПЕРЕВЕСА БОЛЕЕ 2×"
+        if short_jur > long_jur * 2:
+            signal = "bearish"
+            comment = "🔴 ПЕРЕВЕС ШОРТОВ (>2×)"
+        elif long_jur > short_jur * 2:
+            signal = "bullish"
+            comment = "🟢 ПЕРЕВЕС ЛОНГОВ (>2×)"
+
+        lines = [
+            "📊 OI — IMOEX (однодневный фьючерс)",
+            f"Срез: {report_date:%d.%m.%Y} • дневные данные",
+            "Контракты: лонг / шорт",
+            f"Физлица: {_number(long_phys)} / {_number(short_phys)}",
+            f"Юрлица: {_number(long_jur)} / {_number(short_jur)}",
+            "",
+        ]
+        changes = [row.get(field) for row in (phys, jur)
+                   for field in ("oichange_long", "oichange_short")]
+        if all(value is not None for value in changes):
+            p_long, p_short, j_long, j_short = map(_integer, changes)
+            lines.extend([
+                "Изменение к предыдущему отчёту: лонг / шорт",
+                f"Физлица: {_number(p_long, True)} / {_number(p_short, True)}",
+                f"Юрлица: {_number(j_long, True)} / {_number(j_short, True)}",
+                "",
+            ])
+        lines.append(f"Баланс юрлиц: {comment}")
+        print(f"[OI_OK] asset={_ASSET} date={asof} signal={signal}", flush=True)
+        return {
+            "signal": signal,
+            "text": escape("\n".join(lines)),
+            "available": True,
+            "date": asof,
+        }
+
+    except Exception as exc:
+        print(f"[OI_ERROR] {type(exc).__name__}: {exc}", flush=True)
+        return {
+            "signal": "unavailable",
+            "text": "⚠️ OI IMOEX недоступен — баланс позиций не определён.",
+            "available": False,
+            "date": None,
+        }
