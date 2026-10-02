@@ -95,8 +95,8 @@ BASE_TICKERS = [
 ]
 
 PRIORITY_TICKERS = [
-    "YNDX","OZON","AFKS","SMLT","PIKK",
-    "MOEX","RUAL","FLOT","POLY","SBERP"
+    "YDEX","OZON","AFKS","SMLT","PIKK",
+    "MOEX","RUAL","FLOT","SBERP"
 ]
 
 ALL_TICKERS = list(dict.fromkeys(BASE_TICKERS + PRIORITY_TICKERS))
@@ -136,7 +136,6 @@ SECTOR_MAP = {
     "RUAL": "METALS",
     "ALRS": "METALS",
     "PLZL": "METALS",
-    "POLY": "METALS",
 
     # Телеком
     "MTSS": "TELCO",
@@ -146,7 +145,7 @@ SECTOR_MAP = {
     "SMLT": "DEV",
 
     # Тех/ритейл/прочее
-    "YNDX": "TECH",
+    "YDEX": "TECH",
     "OZON": "RETAIL",
     "AFKS": "HOLD",
     "FLOT": "TRANSPORT",
