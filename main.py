@@ -1,126 +1,96 @@
-                if last_sent_ts and (now_ts - last_sent_ts) < (COOLDOWN_MIN * 60):
-                    coins_state[t] = cs
-                    continue
+import os
+import time
+import json
+import tempfile
+from html import escape
+import requests
+from datetime import datetime, timedelta, timezone
+from statistics import mean
+from open_interest import get_open_interest_signal   # 🔹 импорт OI (как у тебя)
+from signal_journal import SignalJournal
 
-                pack = stage_and_signal(t, idx_tr)
-                if pack is None:
-                    coins_state[t] = cs
-                    continue
+print("=== MOEX RADAR (FAST + AGG + SAFE + CONFIRM + FLOW PRO + STATS + REPORTS) ===", flush=True)
 
-                stage, direction, strength, vol_mult, h1_chg, d1_chg, reasons, is_agg, is_safe, _, signal_price = pack
-                if not is_agg and not is_safe:
-                    coins_state[t] = cs
-                    continue
+# =========================
+# ENV
+# =========================
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
 
-                sig_type = "SAFE" if is_safe else "AGG"
+# MSK = UTC+3
+MSK_OFFSET_HOURS = 3
 
-                # Одинаковый тип/score на НОВОЙ H1-свече не является дублем.
-                signal_cols, signal_rows = get_candles(t, 60, 20)
-                begin_index = col_idx(signal_cols, "begin")
-                signal_bar = (
-                    signal_rows[-1][begin_index]
-                    if signal_rows and begin_index is not None else None
-                )
-                if (signal_bar is not None and cs.get("last_signal_bar") == signal_bar
-                    and cs.get("last_type") == sig_type
-                    and cs.get("last_stage") == stage
-                    and cs.get("last_strength") == strength):
-                    coins_state[t] = cs
-                    continue
+# =========================
+# SETTINGS
+# =========================
+CHECK_INTERVAL_SEC = 60 * 5
 
-                # confirm (как у тебя)
-                confirmed = False
-                confirmed_tag = ""
-                if sig_type == "SAFE":
-                    last_agg_ts = cs.get("last_agg_ts", 0)
-                    last_agg_dir = cs.get("last_agg_dir")
-                    if last_agg_ts and (now_ts - last_agg_ts) <= (CONFIRM_WINDOW_HOURS * 3600) and last_agg_dir == direction:
-                        confirmed = True
-                        confirmed_tag = "\n<b>AGGRESSIVE → SAFE подтверждён</b>"
+LOOKBACK_H1_BARS = 24
+EMA_PERIOD = 20
 
-                fire = "🔥" * strength
-                emoji = stage_emoji(stage)
-                star = " ⭐" if t in PRIORITY_TICKERS else ""
+COOLDOWN_MIN = 90  # общий анти-спам для AGG/SAFE
 
-                if sig_type == "AGG":
-                    title = "⚠️ <b>AGGRESSIVE</b> — ранний радар"
-                    conclusion = "🔴 <b>НЕ ВХОД</b>\n(наблюдать и ждать структуру)"
-                else:
-                    title = f"✅ <b>SAFE</b>{confirmed_tag}"
-                    conclusion = "🟢 <b>МОЖНО ПЛАНИРОВАТЬ</b>\n(вход только по структуре)"
+AGG_VOL_MULT_MIN = 1.5
+AGG_BREAK_PCT_MIN = 0.35
 
-                msg = (
-                    f"{title}\n"
-                    f"{emoji} <b>{t}{star}</b>\n"
-                    f"Стадия: <b>{stage}</b>\n"
-                    f"Сила: {fire} ({strength}/5)\n\n"
-                    f"H1: {h1_chg:.2f}% | D1: {d1_chg:.2f}%\n"
-                    f"Объём: x{vol_mult:.2f}\n\n"
-                    "Причины:\n• " + "\n• ".join(reasons) +
-                    f"\n\n{memo_intraday()}\n\n"
-                    f"🧠 <b>ВЫВОД</b>:\n{conclusion}"
-                )
+SAFE_MIN_STRENGTH = 4
 
-                if not send(msg):
-                    coins_state[t] = cs
-                    continue
+# =========================
+# PULLBACK
+# =========================
+PULLBACK_RETRACE_MIN = 30
+PULLBACK_RETRACE_MAX = 60
 
-                _journal_record(
-                    journal, t, sig_type, direction, 60, 20, score=strength,
-                    metadata={"confirmed": confirmed, "stage": stage,
-                              "vol_mult": vol_mult, "reasons": reasons},
-                )
+PULLBACK_VOL_MAX = 0.80
 
-                # state update (как у тебя + flow отдельно выше)
-                cs["last_sent_ts"] = now_ts
-                cs["last_type"] = sig_type
-                cs["last_stage"] = stage
-                cs["last_strength"] = strength
-                
-                cs["last_signal_price"] = signal_price
-                cs["last_signal_direction"] = direction
-                cs["last_signal_type"] = sig_type
-                cs["last_signal_stage"] = stage
-                cs["last_signal_time"] = now_ts
-                cs["last_signal_bar"] = signal_bar
+PULLBACK_COOLDOWN_MIN = 180
 
-                print(
-                    f"[SAVE_SIGNAL] {t} "
-                    f"{sig_type} "
-                    f"{direction} "
-                    f"{signal_price}",
-                    flush=True
-                )
-                               
+CONFIRM_WINDOW_HOURS = 48
 
-                if sig_type == "AGG":
-                    cs["last_agg_ts"] = now_ts
-                    cs["last_agg_dir"] = direction
-                    stats["agg"] = stats.get("agg", 0) + 1
-                    stats["w_agg"] = stats.get("w_agg", 0) + 1
-                else:
-                    stats["safe"] = stats.get("safe", 0) + 1
-                    stats["w_safe"] = stats.get("w_safe", 0) + 1
-                    if confirmed:
-                        stats["confirmed"] = stats.get("confirmed", 0) + 1
-                        stats["w_confirmed"] = stats.get("w_confirmed", 0) + 1
+OVERHEAT_D1_PCT = 8.0
 
-                coins_state[t] = cs
+DAILY_REPORT_HOUR = 19
+DAILY_REPORT_MINUTE = 0
 
-        except Exception as exc:
-            print(f"[BOT_ERROR] {type(exc).__name__}: {exc}", flush=True)
-            send(f"❌ <b>BOT ERROR</b>: {escape(str(exc))}")
-        finally:
-            _CANDLES_CACHE = None
-            # Успешные отправки сохраняются и при ошибке позже в цикле.
-            state["coins"] = coins_state
-            state["stats"] = stats
-            save_state(state)
+WEEKLY_REPORT_WEEKDAY = 0
+WEEKLY_REPORT_HOUR = 10
+WEEKLY_REPORT_MINUTE = 0
 
-        elapsed = time.monotonic() - cycle_started
-        delay = max(0.0, CHECK_INTERVAL_SEC - elapsed)
-        print(f"[CYCLE_DONE] seconds={elapsed:.1f} next_in={delay:.1f}", flush=True)
-        time.sleep(delay)
+# --- FAST (интрадей M15) — ДОБАВЛЕНО, но ничего старого не трогаем
+FAST_INTERVAL_MIN = 10
+FAST_DAYS = 7
+FAST_LOOKBACK_BARS = 30        # флет-окно ≈ 5 часов (30 * 10m)
+FAST_BREAK_BARS = 18           # "последние 3 часа" (18 свечей по 10m)
+FAST_RANGE_MAX_PCT = 2.5       # диапазон флета ≤ 2.5%
+FAST_MOVE_MIN_PCT = 0.6        # импульс одной 10m свечи ≥ 0.6%
+FAST_VOL_MULT_MIN = 1.3        # объём ≥ x1.3
+FAST_COOLDOWN_MIN = 120        # анти-спам FAST на тикер (2 часа)
 
-if __name__ == "__main__":
-    run()
+# =========================
+# FLOW PRO (M5) — НОВЫЙ СЛОЙ, ПОВЕРХ
+# =========================
+FLOW_INTERVAL_MIN = 10
+FLOW_DAYS = 10
+FLOW_LOOKBACK_BARS = 30        # окно для средней ≈ 5 часов (30 * 10m)
+FLOW_TREND_BARS = 3            # 3 свечи в одну сторону
+FLOW_BREAK_BARS = 12           # локальный уровень ≈ 2 часа (12 * 10m)
+
+FLOW_PUBLISH_SCORE_MIN = 8     # проф. порог публикации
+FLOW_PUBLISH_DELTA_MIN = 3     # публикуем если скачок score >= 3
+FLOW_COOLDOWN_SEC = 60 * 20    # анти-спам на FLOW (если надо, но мы итак шлём только по изменениям)
+
+EVENING_START_HOUR = 19        # MSK
+EVENING_THIN_VOL_RATIO = 0.60  # "тонкий рынок" если vol_now < 60% от локальной средней
+EVENING_SCORE_PENALTY = 2      # штраф score в вечерке
+
+STATE_DIR = os.getenv("STATE_DIR", ".")
+STATE_FILE = os.path.join(STATE_DIR, "moex_radar_state.json")
+
+# =========================
+# TICKERS
+# =========================
+BASE_TICKERS = [
+    "SBER","GAZP","LKOH","ROSN","GMKN",
+    "NVTK","TATN","MTSS","ALRS","CHMF",
+    "MAGN","PLZL"
+]              
