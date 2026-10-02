@@ -93,4 +93,4 @@ BASE_TICKERS = [
     "SBER","GAZP","LKOH","ROSN","GMKN",
     "NVTK","TATN","MTSS","ALRS","CHMF",
     "MAGN","PLZL"
-]              
+]
