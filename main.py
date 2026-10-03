@@ -8,8 +8,9 @@ from datetime import datetime, timedelta, timezone
 from statistics import mean
 from open_interest import get_open_interest_signal   # 🔹 импорт OI (как у тебя)
 from signal_journal import SignalJournal
+from pullback_retest import PullbackRetest
 
-print("=== MOEX RADAR (FAST + AGG + SAFE + CONFIRM + FLOW PRO + STATS + REPORTS) ===", flush=True)
+print("=== MOEX RADAR (FAST + AGG + SAFE + CONFIRM + FLOW PRO + PULLBACK + RETEST + STATS + REPORTS) ===", flush=True)
 
 # =========================
 # ENV
@@ -920,17 +921,18 @@ def _journal_start():
 
 
 def _journal_record(journal, ticker, kind, direction, interval, days,
-                    score=None, metadata=None):
+                    score=None, metadata=None, retest=None):
     if journal is None:
         return
     # This function is called only AFTER send() acknowledged Telegram delivery.
     emitted_ts = datetime.now(timezone.utc).timestamp()
+    signal_id = None
     try:
         cols, rows = get_candles(ticker, interval, days)
         if not cols or not rows:
             raise ValueError("Нет исходной свечи доставленного сигнала")
         latest = dict(zip(cols, rows[-1]))
-        journal.record(
+        signal_id = journal.record(
             ticker=ticker, kind=kind, direction=direction,
             emitted_ts=emitted_ts, source_interval=interval,
             source_begin=latest["begin"], source_end=latest["end"],
@@ -939,6 +941,8 @@ def _journal_record(journal, ticker, kind, direction, interval, days,
     except Exception as exc:
         print(f"[JOURNAL_ERROR] record {ticker} {kind} "
               f"{type(exc).__name__}: {exc}", flush=True)
+    if retest is not None:
+        _retest_arm(retest, ticker, kind, direction, emitted_ts, signal_id)
 
 
 def _journal_update(journal):
@@ -960,12 +964,87 @@ def _journal_report(journal, days):
         return "\n📒 Отчёт журнала временно недоступен.\n"
 
 
+def _retest_start(journal):
+    if journal is None:
+        print("[RETEST_DISABLED] journal_unavailable", flush=True)
+        return None
+    try:
+        return PullbackRetest(
+            journal.db, retrace_min=PULLBACK_RETRACE_MIN,
+            retrace_max=PULLBACK_RETRACE_MAX, volume_max=PULLBACK_VOL_MAX,
+            cooldown_seconds=PULLBACK_COOLDOWN_MIN * 60,
+        )
+    except Exception as exc:
+        print(f"[RETEST_ERROR] init {type(exc).__name__}: {exc}", flush=True)
+        return None
+
+
+def _retest_arm(retest, ticker, kind, direction, delivered_ts, signal_id):
+    if retest is None:
+        return
+    try:
+        columns, rows = get_candles(ticker, 10, 10)
+        if columns and rows:
+            retest.arm(ticker, kind, direction, columns, rows,
+                       delivered_ts, seed_signal_id=signal_id)
+    except Exception as exc:
+        print(f"[RETEST_ERROR] arm {ticker} {type(exc).__name__}: {exc}", flush=True)
+
+
+def _retest_update(retest, journal):
+    if retest is None or journal is None:
+        return
+    try:
+        events = retest.update(get_candles, datetime.now(timezone.utc).timestamp())
+        for event in events[:2]:
+            event_id = "retest_" + event["setup_id"]
+            saved = journal.db.execute(
+                "SELECT emitted_ts FROM signals WHERE id=?", (event_id,)
+            ).fetchone()
+            if saved:
+                retest.mark_sent(event, saved[0])
+                continue
+            arrow = "📈" if event["direction"] == "UP" else "📉"
+            text = (
+                f"✅ <b>MOEX PULLBACK + RETEST</b> — {escape(event['ticker'])}\n"
+                f"{arrow} Направление: <b>{event['direction']}</b>\n"
+                f"Исходный радар: {event['source_kind']}\n"
+                f"Проверенный уровень: <b>{event['level']:.8g}</b>\n"
+                f"Откат: {event['retrace_pct']:.1f}% импульса\n"
+                f"Объём отката: x{event['pullback_volume_ratio']:.2f} к импульсу\n\n"
+                "Уровень удержан; следующая закрытая M10 подтвердила возврат.\n"
+                f"Закрытие подтверждения: {event['source_price']:.8g}\n"
+                f"Уровень отмены структуры: {event['invalidation_price']:.8g}\n"
+                f"Последняя цена в данных: {event['observed_price']:.8g}\n"
+                f"Свеча подтверждения: {event['source_begin']} МСК\n"
+                f"Последняя свеча в данных: {event['observed_begin']} МСК\n\n"
+                "Сценарий для проверки; цены ISS поступают с задержкой."
+            )
+            if not send(text):
+                continue
+            delivered_ts = datetime.now(timezone.utc).timestamp()
+            try:
+                journal.record(
+                    ticker=event["ticker"], kind="RETEST", direction=event["direction"],
+                    emitted_ts=delivered_ts, source_interval=10,
+                    source_begin=event["source_begin"], source_end=event["source_end"],
+                    source_price=event["source_price"], metadata=event, event_id=event_id,
+                )
+            except Exception as exc:
+                print(f"[JOURNAL_ERROR] record RETEST {event['ticker']} "
+                      f"{type(exc).__name__}: {exc}", flush=True)
+            retest.mark_sent(event, delivered_ts)
+    except Exception as exc:
+        print(f"[RETEST_ERROR] update {type(exc).__name__}: {exc}", flush=True)
+
+
 # =========================
 # MAIN
 # =========================
 def run():
     global _CANDLES_CACHE
     journal = _journal_start()
+    retest = _retest_start(journal)
     state = load_state()
     coins_state = state.get("coins", {})
     stats = state.get("stats", {})
@@ -1013,7 +1092,7 @@ def run():
 
     # Старт отмечаем только после подтверждённой доставки Telegram.
     if state.get("start_day") != day_key:
-        if send("🇷🇺 <b>MOEX-радар активен</b>\nАкции РФ • M10 + H1 + D1 • FAST + AGG + SAFE • FLOW PRO • подтверждение • статистика"):
+        if send("🇷🇺 <b>MOEX-радар активен</b>\nАкции РФ • M10 + H1 + D1 • FAST + AGG + SAFE • FLOW PRO • PULLBACK + RETEST • статистика"):
             state["start_day"] = day_key
             save_state(state)
 
@@ -1060,6 +1139,7 @@ def run():
 
             # Evaluate existing events before reports and new signals.
             _journal_update(journal)
+            _retest_update(retest, journal)
 
             # DAILY REPORT
             if should_fire_at(now, DAILY_REPORT_HOUR, DAILY_REPORT_MINUTE) and state.get("last_daily_day") != day_key:
@@ -1301,6 +1381,7 @@ def run():
                     journal, t, "FLOW", fdir, FLOW_INTERVAL_MIN, FLOW_DAYS,
                     score=score, metadata={"sector": sector, "shift": shift,
                                            "vol_mult": vol_mult, "reasons": reasons},
+                    retest=retest,
                 )
 
                 cs["last_flow_pub_ts"] = now_ts
@@ -1364,6 +1445,7 @@ def run():
                             _journal_record(
                                 journal, t, "FAST", f_dir, FAST_INTERVAL_MIN, FAST_DAYS,
                                 metadata={"vol_mult": f_vol_mult, "reasons": f_reasons},
+                                retest=retest,
                             )
                             cs["last_fast_ts"] = now_ts
                             stats["fast"] = stats.get("fast", 0) + 1
@@ -1444,6 +1526,7 @@ def run():
                     journal, t, sig_type, direction, 60, 20, score=strength,
                     metadata={"confirmed": confirmed, "stage": stage,
                               "vol_mult": vol_mult, "reasons": reasons},
+                    retest=retest,
                 )
 
                 # state update (как у тебя + flow отдельно выше)
